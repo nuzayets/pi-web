@@ -54,6 +54,7 @@ jobs:
         if: steps.pick.outputs.exists != 'true'
         run: |
           npm ci
+          npm run generate:material-icons
           npx --yes tsrs@7.1.0-beta.tsrs3 --noEmit
           npm run build
           npm pkg set piWebFork.release="${{ steps.pick.outputs.tag }}"
