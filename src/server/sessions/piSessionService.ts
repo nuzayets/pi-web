@@ -5725,9 +5725,10 @@ export class PiSessionService implements SessionRouteService {
     if (eventType === "turn_end") { this.publishActivity(session, { kind: "turnComplete" }, "idle"); return; }
     if (eventType === "message_start") { this.publishActivity(session, { kind: "messageStarted" }, "active"); return; }
     if (eventType === "message_end") { this.publishActivity(session, { kind: "messageComplete" }, "idle"); return; }
-    if (eventType === "message_update") { this.publishActivity(session, { kind: "receivingResponse" }, "active"); return; }
+    if (eventType === "message_update") { this.publishStreamingActivity(session, "receivingResponse"); return; }
     // Streamed output belongs to the running tool, not the generic event fallback.
-    if (eventType === "tool_execution_start" || eventType === "tool_execution_update") {
+    if (eventType === "tool_execution_update") { this.publishStreamingActivity(session, "runningTool", getString(event, "toolName")); return; }
+    if (eventType === "tool_execution_start") {
       this.publishActivity(session, { kind: "runningTool" }, "active", getString(event, "toolName"));
       return;
     }
@@ -5794,6 +5795,13 @@ export class PiSessionService implements SessionRouteService {
       ...(startupPresentation === undefined ? {} : { startupPresentation }),
     };
     this.events.publishGlobal(startupToken === undefined ? { type: "session.startup", activity } : { type: "session.startup", startupToken, activity });
+  }
+
+  /** Streaming chunks repeat the current activity; the heartbeat refreshes its timestamp. */
+  private publishStreamingActivity(session: PiAgentSession, kind: "receivingResponse" | "runningTool", detail?: string): void {
+    const current = this.activities.get(session.sessionId);
+    if (current?.phase === "active" && current.runtimePresentation.kind === kind && current.detail === detail) return;
+    this.publishActivity(session, { kind }, "active", detail);
   }
 
   private publishActivity(session: PiAgentSession, runtimePresentation: RuntimeActivityPresentation, phase: "active" | "idle" | "error", detail?: string): void {

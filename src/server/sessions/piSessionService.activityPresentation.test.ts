@@ -54,6 +54,21 @@ describe("runtime activity presentation", () => {
     } finally { await f.service.dispose(); }
   });
 
+  it("publishes a streaming activity once rather than once per chunk", async () => {
+    const f = await fixture();
+    try {
+      f.fake.emit({ type: "message_start" });
+      const published = f.activities().length;
+      for (let chunk = 0; chunk < 3; chunk += 1) f.fake.emit({ type: "message_update" });
+      expect(f.activities()).toHaveLength(published + 1);
+      f.fake.emit({ type: "tool_execution_start", toolName: "bash" });
+      for (let chunk = 0; chunk < 3; chunk += 1) f.fake.emit({ type: "tool_execution_update", toolName: "bash" });
+      expect(f.activities()).toHaveLength(published + 2);
+      f.fake.emit({ type: "tool_execution_update", toolName: "read" });
+      expect(f.activities().at(-1)).toMatchObject({ detail: "read", runtimePresentation: { kind: "runningTool" } });
+    } finally { await f.service.dispose(); }
+  });
+
   it("leaves the running activity unchanged when a session entry is appended mid-turn", async () => {
     const f = await fixture();
     try {
