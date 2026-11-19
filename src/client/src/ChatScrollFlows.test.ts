@@ -1050,3 +1050,26 @@ describe("prepend and cleanup", () => {
     expect(f.host.requestEarlier).not.toHaveBeenCalled();
   });
 });
+
+describe("leaving a session that follows the live tail", () => {
+  it("returns to the live tail even when output arrived just before leaving", () => {
+    const f = fixture();
+    f.start();
+    f.frames.flush();
+    expect(f.flows.followingLive).toBe(true);
+    f.state.anchors = [f.element(500, "m:1"), f.element(650, "m:2")];
+    // Streamed output rendered; the follow frame has not run yet.
+    f.state.height += 120;
+    f.update();
+    f.flows.beforeRender({ sessionChanged: true, previousScopeKey: "s1", prepend: false });
+    expect(f.storage.values.get(chatScrollStorageKey("s1"))).toBe(JSON.stringify({ mode: "bottom" }));
+
+    f.state.sessionId = "s1";
+    f.state.height += 2000;
+    f.flows.beforeRender({ sessionChanged: true, prepend: false });
+    f.update({ sessionChanged: true });
+    f.frames.flush();
+    expect(f.state.top).toBe(f.state.height - f.state.viewport);
+    expect(f.flows.followingLive).toBe(true);
+  });
+});
