@@ -320,7 +320,9 @@ export class ChatScrollFlows {
   savePosition(scopeKey = this.host.getScopeKey()): void {
     // Do not overwrite an unresolved saved anchor with incidental geometry.
     if (this.disposed || !this.host.getBehaviors().rememberPosition || scopeKey === "" || this.restoration?.scopeKey === scopeKey) return;
-    this.controller.savePosition(scopeKey, this.host.getScroller(), this.host.getAnchors());
+    // Output rendered before the next follow frame leaves the viewport short of the end.
+    const bottomThreshold = this.tail.followingLive ? Number.POSITIVE_INFINITY : undefined;
+    this.controller.savePosition(scopeKey, this.host.getScroller(), this.host.getAnchors(), bottomThreshold);
   }
 
   restorePosition(): void {
