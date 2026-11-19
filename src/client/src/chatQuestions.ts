@@ -9,32 +9,24 @@ export interface QuestionTailContext {
 }
 
 /**
- * The latest question stays open until a later line continues the conversation.
+ * The latest question stays open until it is answered or skipped, or a newer question replaces it,
+ * so a goal continuation or background notice doesn't discard it.
  * The last visible page is not necessarily the active conversation's tail.
  */
 export function openTranscriptQuestion(messages: readonly ChatLine[], context: QuestionTailContext): AskUserRequest | undefined {
   if (!context.historyReady || !context.writable || context.messageEnd < context.messageTotal) return undefined;
+  const answered = new Set<string>();
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const line = messages[index];
     if (line === undefined) continue;
-    const last = line.parts.at(-1);
-    if (last?.type === "askUserQuestion") return last.ask;
-    if (continuesConversation(line)) return undefined;
+    const parts = chatFallbackParts(line.parts);
+    for (let partIndex = parts.length - 1; partIndex >= 0; partIndex -= 1) {
+      const part = parts[partIndex];
+      if (part?.type === "askUserRecord") answered.add(part.outcome.askId);
+      if (part?.type === "askUserQuestion") return answered.has(part.ask.askId) ? undefined : part.ask;
+    }
   }
   return undefined;
-}
-
-/**
- * Mirrors the server's `continuesConversation` in
- * `src/server/sessions/sessionIntervention.ts`, which clears the session's
- * attention flag: user, assistant and tool lines, failed replies, and delivered
- * answers continue the conversation. Passive lines (custom notices, shell
- * output, compaction and branch summaries, local errors) do not.
- */
-function continuesConversation(line: ChatLine): boolean {
-  if (line.role === "user" || line.role === "assistant" || line.role === "tool" || line.role === "skill") return true;
-  return chatFallbackParts(line.parts).some((part) => part.type === "askUserRecord"
-    || (part.type === "text" && part.presentation?.kind === "modelError"));
 }
 
 /** Responses remain separate transcript facts; none is treated as stale. */

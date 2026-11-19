@@ -185,7 +185,7 @@ describe("chat message normalization", () => {
       { role: "toolResult", toolCallId: "other", toolName: "bash", entryId: "later", content: [{ type: "text", text: "later" }], isError: false },
     ]);
     expect(messages.at(-1)).toMatchObject({ entryId: "later", parts: [{ type: "toolResultBoundary", toolCallId: "other" }] });
-    expect(openTranscriptQuestion(messages, { historyReady: true, writable: true, messageEnd: 3, messageTotal: 3 })).toBeUndefined();
+    expect(openTranscriptQuestion(messages, { historyReady: true, writable: true, messageEnd: 3, messageTotal: 3 })).toEqual(askUserRequest);
     expect(groupChatMessages(messages).at(-1)?.kind).toBe("message");
   });
 
@@ -194,7 +194,7 @@ describe("chat message normalization", () => {
     const empty: ChatLine = { role: "tool", parts: [], entryId: "empty-entry", meta: { timestamp: askUserRequest.askedAt } };
     const messages = normalizeMessages([question, empty]);
     expect(messages.at(-1)).toEqual({ ...empty, parts: [{ type: "empty" }] });
-    expect(openTranscriptQuestion(messages, { historyReady: true, writable: true, messageEnd: 2, messageTotal: 2 })).toBeUndefined();
+    expect(openTranscriptQuestion(messages, { historyReady: true, writable: true, messageEnd: 2, messageTotal: 2 })).toEqual(askUserRequest);
     expect(normalizeMessages(messages)).toEqual(messages);
   });
 

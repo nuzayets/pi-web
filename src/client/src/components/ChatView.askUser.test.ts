@@ -93,29 +93,18 @@ describe("ChatView conversation-first questions", () => {
   it.each<ChatLine>([
     textMessage("user", "Continue without answering"),
     textMessage("assistant", "A streamed continuation"),
-  ])("closes in place on later $role text and retains full historical options and draft", async (later) => {
+  ])("stays open on later $role text and keeps the draft", async (later) => {
     const view = await mountView(normalizeMessages(questionHistory));
     const original = await questionCard(view);
     requiredElement(original.shadowRoot?.querySelector<HTMLInputElement>('input[value="vim"]'), "Vim option").click();
     await original.updateComplete;
     view.messages = [...view.messages, later];
     await view.updateComplete;
-    const closed = await questionCard(view);
-    expect(closed).toBe(original);
-    expect(closed.open).toBe(false);
-    expect(closed.onSubmit).toBeUndefined();
-    const root = requiredElement(closed.shadowRoot, "closed shadow root");
-    expect(root.querySelector("details")?.open).toBe(false);
-    expect(root.textContent).toContain("Draft answer · not sent");
-    expect(root.textContent).toContain("Vim");
-    expect(root.textContent).toContain("VS Code");
-    expect(root.textContent).toContain("Modal editor");
-    expect(root.textContent).toContain("Graphical editor");
-    expect(root.textContent).toContain("Used in examples.");
-    expect(root.querySelector("input, textarea, button, select")).toBeNull();
-    const rows = [...(view.shadowRoot?.querySelectorAll(".chat > article") ?? [])];
-    expect(rows[0]?.contains(closed)).toBe(true);
-    expect(rows[1]?.contains(closed)).toBe(false);
+    const card = await questionCard(view);
+    expect(card).toBe(original);
+    expect(card.open).toBe(true);
+    expect(card.onSubmit).toBeDefined();
+    expect(requiredElement(card.shadowRoot?.querySelector<HTMLInputElement>('input[value="vim"]'), "Vim option").checked).toBe(true);
   });
 
   it("opens only a later question while retaining the old collapsed question", async () => {
