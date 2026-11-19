@@ -5848,6 +5848,7 @@ export class PiSessionService implements SessionRouteService {
     const suggestedInput = this.suggestedInputs.get(session.sessionId);
     const queuedMessages = this.queuedMessages(session);
     const queueMessageActionsUnavailable = this.queueCompatibility.reason(session);
+    const queuedAskIds = queuedAskIdsFromSession(session);
     return {
       sessionId: session.sessionId,
       persisted: sessionFileExists(session.sessionFile),
@@ -5860,6 +5861,7 @@ export class PiSessionService implements SessionRouteService {
       isBashRunning: session.isBashRunning,
       pendingMessageCount: this.pendingMessageCount(session),
       queuedMessages,
+      ...(queuedAskIds.length === 0 ? {} : { queuedAskIds }),
       ...(queueMessageActionsUnavailable === undefined ? {} : { queueMessageActionsUnavailable }),
       messageCount,
       tokens: stats.tokens,
@@ -6321,6 +6323,21 @@ async function clearParentSession(sessionFile: string): Promise<void> {
 function clearParentSessionHeader(sessionManager: PiSessionManager): void {
   const header = sessionManager.getHeader?.();
   if (header !== undefined && header !== null) delete header.parentSession;
+}
+
+/** Answers sent while the agent works wait in Pi's queue, outside the prompt text mirrors. */
+function queuedAskIdsFromSession(session: PiAgentSession): string[] {
+  let queues: { steer: unknown[]; followUp: unknown[] };
+  try {
+    queues = snapshotAgentQueues(mutableQueueAgent(session.agent));
+  } catch {
+    return [];
+  }
+  return [...queues.steer, ...queues.followUp].flatMap((message) => {
+    if (!isRecord(message) || message["role"] !== "custom" || message["customType"] !== ASK_USER_ANSWERS_CUSTOM_TYPE) return [];
+    const details = message["details"];
+    return isRecord(details) && typeof details["askId"] === "string" ? [details["askId"]] : [];
+  });
 }
 
 function clearSessionQueue(session: PiAgentSession): void {

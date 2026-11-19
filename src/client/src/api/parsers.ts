@@ -562,6 +562,7 @@ export function parseSessionStatus(value: unknown): SessionStatus {
     isBashRunning: requireBoolean(record, "isBashRunning"),
     pendingMessageCount: requireNumber(record, "pendingMessageCount"),
     queuedMessages: record["queuedMessages"] === undefined ? [] : arrayOf(parseQueuedSessionMessage)(record["queuedMessages"]),
+    ...optionalField("queuedAskIds", optionalStringArray(record["queuedAskIds"], "queuedAskIds")),
     ...optionalField("queueMessageActionsUnavailable", optionalString(record, "queueMessageActionsUnavailable")),
     ...optionalField("messageCount", optionalNumber(record, "messageCount")),
     tokens: parseTokens(record["tokens"]),

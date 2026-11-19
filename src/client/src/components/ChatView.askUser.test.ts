@@ -107,6 +107,21 @@ describe("ChatView conversation-first questions", () => {
     expect(requiredElement(card.shadowRoot?.querySelector<HTMLInputElement>('input[value="vim"]'), "Vim option").checked).toBe(true);
   });
 
+  it("closes a question whose answer is queued and reopens it if the answer is dropped", async () => {
+    const view = await mountView(normalizeMessages(questionHistory));
+    view.queuedAskIds = [ask.askId];
+    await view.updateComplete;
+    const queued = await questionCard(view);
+    expect(queued.open).toBe(false);
+    expect(queued.onSubmit).toBeUndefined();
+    expect(queued.shadowRoot?.textContent).toContain("Answer queued");
+    view.queuedAskIds = [];
+    await view.updateComplete;
+    const reopened = await questionCard(view);
+    expect(reopened.open).toBe(true);
+    expect(reopened.onSubmit).toBeDefined();
+  });
+
   it("opens only a later question while retaining the old collapsed question", async () => {
     const view = await mountView(normalizeMessages(questionHistory));
     const newer = { ...ask, askId: "ask-next" };

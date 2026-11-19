@@ -60,6 +60,7 @@ export interface TranscriptRenderContext {
   openQuestionId: () => string | undefined;
   questionOutcomes: ReadonlyMap<string, AskUserOutcome[]>;
   questionIds: ReadonlySet<string>;
+  queuedAskIds: readonly string[];
   askDraftSessionId: string;
   onQuestionActionsChange?: QuestionActionsCallback | undefined;
   onSubmitAsk: ((askId: string, submission: AskUserSubmission) => void | Promise<void>) | undefined;
@@ -281,7 +282,7 @@ export function renderPart(context: TranscriptRenderContext, part: ChatPart, mes
       const open = context.openQuestionId() === part.ask.askId;
       return html`<ask-user-card
         class=${open ? "part open-question-card" : "part closed-question-card"}
-        .ask=${part.ask} .open=${open}
+        .ask=${part.ask} .open=${open} .queued=${context.queuedAskIds.includes(part.ask.askId)}
         .outcomes=${context.questionOutcomes.get(part.ask.askId) ?? []}
         .draftSessionId=${context.askDraftSessionId}
         .onSubmit=${open ? context.onSubmitAsk : undefined}

@@ -24,6 +24,7 @@ export default {
   keepEditing: message("Keep editing", "Return to the first unanswered question"),
   sendAnyway: message("Send anyway", "Submit a partially answered question set"),
   closed: message<{ total: number }>("Closed · {total, plural, one {# question} other {# questions}}", "Closed question-set disclosure status"),
+  queued: message("Answer queued · sent when the agent finishes", "Answer accepted while the agent works and waiting to be delivered"),
   multiple: message("Multiple choices allowed", "Historical question allowed several choices"),
   skipped: message("Questions skipped", "Recorded submitted response contains no answers"),
   sent: message("Answers sent", "Recorded submitted response contains answers"),

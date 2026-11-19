@@ -66,6 +66,8 @@ export class AskUserCard extends LitElement {
 
   @property({ attribute: false }) ask?: AskUserRequest;
   @property({ type: Boolean }) open = false;
+  /** Answered while the agent works; Pi delivers the answer when its run ends. */
+  @property({ type: Boolean }) queued = false;
   @property({ attribute: false }) outcomes: readonly AskUserOutcome[] = [];
   @property({ attribute: false }) outcome?: AskUserOutcome;
   /** A response alongside an original request need not repeat offered options. */
@@ -257,7 +259,7 @@ export class AskUserCard extends LitElement {
   private renderClosedAsk(ask: AskUserRequest): TemplateResult {
     return html`
       <details class="ui-transcript-surface card closed-card">
-        <summary class="ui-transcript-disclosure ui-transcript-card-header card-header"><h2>${askUserMessages.t("questions")}</h2><span class="ui-transcript-card-status header-status">${askUserMessages.t("closed", { total: ask.questions.length })}</span></summary>
+        <summary class="ui-transcript-disclosure ui-transcript-card-header card-header"><h2>${askUserMessages.t("questions")}</h2><span class="ui-transcript-card-status header-status">${this.queued && this.outcomes.length === 0 ? askUserMessages.t("queued") : askUserMessages.t("closed", { total: ask.questions.length })}</span></summary>
         ${this.outcomes.map((outcome) => html`<p class="record-summary">${askUserOutcomeSummary(outcome)}</p>`)}
         <div class="record-questions">
           ${ask.questions.map((question, index) => html`
@@ -323,6 +325,8 @@ export class AskUserCard extends LitElement {
 
   private renderRecordedAnswer(outcome: AskUserOutcome | undefined, record: AskUserQuestionRecord): TemplateResult {
     const answer = this.displayedRecordAnswer(outcome, record);
+    // A queued card's draft may differ from what was sent, e.g. after Discard.
+    if (this.queued && answer?.fromDraft === true) return html``;
     return html`
         ${answer === undefined
           ? html`<p class="unanswered-record">${askUserMessages.t("unanswered")}</p>`
