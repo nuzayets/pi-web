@@ -1,0 +1,68 @@
+name: Release local build
+
+# Rebuilds the latest upstream PI WEB release with the commits on `local`.
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency: release
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: local
+          fetch-depth: 0
+
+      - name: Pick the release
+        id: pick
+        run: |
+          git fetch --quiet --force --tags https://github.com/jmfederico/pi-web.git
+          upstream=$(git tag -l 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+          base=$(git describe --tags --abbrev=0 --match 'v*' HEAD)
+          tag="$upstream-local.$(git rev-parse --short=8 HEAD)"
+          echo "upstream=$upstream base=$base tag=$tag"
+          {
+            echo "upstream=$upstream"
+            echo "base=$base"
+            echo "tag=$tag"
+          } >> "$GITHUB_OUTPUT"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The rebased branch is not pushed: a push from the workflow token can't change upstream's workflow files.
+      - name: Rebase onto the upstream release
+        if: steps.pick.outputs.exists != 'true' && steps.pick.outputs.base != steps.pick.outputs.upstream
+        run: git -c user.name=ci -c user.email=ci@localhost rebase --onto "${{ steps.pick.outputs.upstream }}" "${{ steps.pick.outputs.base }}"
+
+      - uses: actions/setup-node@v4
+        if: steps.pick.outputs.exists != 'true'
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Build
+        if: steps.pick.outputs.exists != 'true'
+        run: |
+          npm ci
+          npx --yes tsrs@7.1.0-beta.tsrs3 --noEmit
+          npm run build
+          npm pkg set piWebFork.release="${{ steps.pick.outputs.tag }}"
+          mv "$(npm pack --ignore-scripts --silent)" pi-web.tgz
+
+      # Tagging this branch, not local, keeps upstream's release-triggered workflows from running here.
+      - name: Publish
+        if: steps.pick.outputs.exists != 'true'
+        run: |
+          gh release create "${{ steps.pick.outputs.tag }}" pi-web.tgz --repo "$GITHUB_REPOSITORY" --target ci --latest \
+            --title "${{ steps.pick.outputs.tag }}" \
+            --notes "PI WEB ${{ steps.pick.outputs.upstream }} with the commits on local at ${{ steps.pick.outputs.tag }}."
