@@ -58,6 +58,7 @@ jobs:
           npx --yes tsrs@7.1.0-beta.tsrs3 --noEmit
           npm run build
           npm pkg set piWebFork.release="${{ steps.pick.outputs.tag }}"
+          mkdir packed
           npm pack --ignore-scripts --pack-destination packed
           mv packed/*.tgz pi-web.tgz
 
