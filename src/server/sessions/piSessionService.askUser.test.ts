@@ -1,6 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Agent } from "@earendil-works/pi-agent-core";
 import { createAssistantMessageEventStream, type AssistantMessage } from "@earendil-works/pi-ai";
 import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager, type AgentSession, type CustomMessageEntry } from "../../piSdk.js";
 import { describe, expect, it, vi } from "vitest";
@@ -282,6 +283,24 @@ describe("question reply acknowledgment", () => {
       await expect(service.submitAsk(sessionRef(SESSION_ID), "ask-1", { answers: [] })).resolves.toMatchObject({ sessionId: SESSION_ID });
       expect(fake.calls.sendCustomMessage).toHaveLength(1);
       expect(unsubscribe).toHaveBeenCalledOnce();
+    } finally { await service.dispose(); }
+  });
+
+  it("reports an answer waiting in Pi's queue until the queue is empty", async () => {
+    const { service, fake } = askService();
+    try {
+      const agent = new Agent({ streamFn: () => { throw new Error("Must not run model"); } });
+      fake.session.agent = agent;
+      await service.status(sessionRef(SESSION_ID));
+      fake.session.isStreaming = true;
+      vi.spyOn(fake.session, "sendCustomMessage").mockImplementation((message) => {
+        agent.followUp({ role: "custom", ...message, timestamp: 0 });
+        return Promise.resolve();
+      });
+      const status = await service.submitAsk(sessionRef(SESSION_ID), "ask-1", { answers: [] });
+      expect(status.queuedAskIds).toEqual(["ask-1"]);
+      agent.clearAllQueues();
+      expect((await service.status(sessionRef(SESSION_ID))).queuedAskIds).toBeUndefined();
     } finally { await service.dispose(); }
   });
 

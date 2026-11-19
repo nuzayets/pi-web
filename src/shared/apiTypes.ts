@@ -1273,6 +1273,8 @@ export interface SessionStatus {
   isBashRunning: boolean;
   pendingMessageCount: number;
   queuedMessages: QueuedSessionMessage[];
+  /** Questions whose answers Pi holds until the current run ends. */
+  queuedAskIds?: string[];
   /** Best-effort SDK compatibility failure; public queue clearing remains available. */
   queueMessageActionsUnavailable?: string;
   messageCount?: number;

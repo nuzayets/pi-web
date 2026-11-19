@@ -157,6 +157,7 @@ export class ChatView extends LitElement {
     }
   };
   @property({ attribute: false }) onSubmitAsk: ((askId: string, submission: AskUserSubmission) => void | Promise<void>) | undefined;
+  @property({ attribute: false }) queuedAskIds: readonly string[] = [];
   @property({ attribute: false }) pendingDialogs: PendingExtensionDialog[] = [];
   @property({ attribute: false }) closedDialogs: ClosedExtensionDialog[] = [];
   @property({ attribute: false }) onAnswerDialog?: ExtensionDialogAnswerCallback;
@@ -592,6 +593,7 @@ export class ChatView extends LitElement {
       openQuestionId: () => this.openQuestion()?.askId,
       questionOutcomes: this.questionOutcomes,
       questionIds: this.questionIds,
+      queuedAskIds: this.queuedAskIds,
       askDraftSessionId: this.askDraftSessionId,
       onSubmitAsk: this.onSubmitAsk,
       onQuestionActionsChange: this.onQuestionActionsChange === undefined ? undefined : this.handleQuestionActionsChange,
@@ -665,12 +667,13 @@ export class ChatView extends LitElement {
   }
 
   private openQuestion() {
-    return openTranscriptQuestion(this.messages, {
+    const ask = openTranscriptQuestion(this.messages, {
       historyReady: this.historyReady,
       messageEnd: this.messageEnd,
       messageTotal: this.messageTotal,
       writable: this.onSubmitAsk !== undefined,
     });
+    return ask === undefined || this.queuedAskIds.includes(ask.askId) ? undefined : ask;
   }
 
   private isNewOpenDialog(previous: unknown): boolean {
