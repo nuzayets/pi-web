@@ -17,7 +17,7 @@ export const conversationLayoutStyles = css`
     .activity-region { position: absolute; top: -9px; inset-inline: 8px; z-index: 1; display: flex; justify-content: center; pointer-events: none; }
     .activity-dock { display: flex; align-items: center; gap: 4px; max-width: 100%; height: 18px; min-width: 0; box-sizing: border-box; background: var(--pi-success-surface); color: var(--pi-text); padding: 1px 6px; font: 11px/16px var(--pi-font, system-ui, sans-serif); }
     .activity-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--pi-success); flex: 0 0 auto; animation: pulse 1s ease-in-out infinite; }
+    .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--pi-success); flex: 0 0 auto; animation: pulse 1s steps(1, end) infinite; }
     .plain .dot { animation: none; }
     @media (prefers-reduced-motion: reduce) { .dot { animation: none; } }
     @keyframes pulse { 0%, 100% { transform: scale(.75); opacity: .55; } 50% { transform: scale(1.2); opacity: 1; } }

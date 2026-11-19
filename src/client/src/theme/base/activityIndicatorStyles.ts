@@ -3,7 +3,8 @@ import { css } from "lit";
 /** Shared mark appearance; consumers own placement within their rows or controls. */
 export const activityIndicatorStyles = css`
   @layer pi-web-base {
-    .activity-indicator { flex: 0 0 auto; display: inline-block; width: 7px; height: 7px; background: var(--pi-success); animation: activity-pulse 1s ease-in-out infinite; }
+    /* Stepped, not smooth: a smooth pulse makes the browser draw every display frame while any session works. */
+    .activity-indicator { flex: 0 0 auto; display: inline-block; width: 7px; height: 7px; background: var(--pi-success); animation: activity-pulse 1s steps(1, end) infinite; }
     .activity-indicator.session { border-radius: 50%; background: var(--pi-success); }
     .activity-indicator.intervention-required { box-sizing: border-box; border: 1.5px solid var(--pi-warning); border-radius: 50%; background: transparent; animation: none; }
     .activity-indicator.terminal { border-radius: 2px; background: var(--pi-accent); }
