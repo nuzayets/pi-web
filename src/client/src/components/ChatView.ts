@@ -26,7 +26,7 @@ import { ChatScrollFlows } from "../ChatScrollFlows";
 import { chatScrollScopeKey } from "../chatScrollPosition";
 import { ChatRenderKeys } from "../chatRenderKeys";
 import { DEFAULT_CHAT_BEHAVIORS, type ChatBehaviors } from "../chatBehaviors";
-import type { AskUserSubmission, PendingExtensionDialog, QueuedSessionMessage, SessionActivity, SessionRef, SessionStatus } from "../api";
+import type { AskUserRequest, AskUserSubmission, PendingExtensionDialog, QueuedSessionMessage, SessionActivity, SessionRef, SessionStatus } from "../api";
 import type { ClosedExtensionDialog } from "../appState";
 import type { ChatLine, ChatPart } from "../chatTypes";
 import { chatStyles } from "./chat/chatStyles";
@@ -158,6 +158,7 @@ export class ChatView extends LitElement {
   };
   @property({ attribute: false }) onSubmitAsk: ((askId: string, submission: AskUserSubmission) => void | Promise<void>) | undefined;
   @property({ attribute: false }) queuedAskIds: readonly string[] = [];
+  @property({ attribute: false }) earlierAsk: AskUserRequest | undefined;
   @property({ attribute: false }) pendingDialogs: PendingExtensionDialog[] = [];
   @property({ attribute: false }) closedDialogs: ClosedExtensionDialog[] = [];
   @property({ attribute: false }) onAnswerDialog?: ExtensionDialogAnswerCallback;
@@ -401,6 +402,7 @@ export class ChatView extends LitElement {
               return this.renderMessage(group.message, group.index, entryActionHeaders);
             },
           ))}
+          ${this.renderEarlierQuestion()}
           ${this.renderQueuedMessages()}
           ${this.renderSessionActivity()}
           ${this.renderExtensionDialogs()}
@@ -657,7 +659,7 @@ export class ChatView extends LitElement {
   }
 
   private scrollContentChanged(changed: Map<string, unknown>): boolean {
-    return changed.has("messages") || changed.has("transcriptRenderers") || changed.has("historyReady") || changed.has("messageEnd") || changed.has("messageTotal") || changed.has("onSubmitAsk") || changed.has("pendingDialogs") || changed.has("closedDialogs");
+    return changed.has("messages") || changed.has("transcriptRenderers") || changed.has("historyReady") || changed.has("messageEnd") || changed.has("messageTotal") || changed.has("onSubmitAsk") || changed.has("earlierAsk") || changed.has("pendingDialogs") || changed.has("closedDialogs");
   }
 
   private requestLoadMore(): void {
@@ -666,12 +668,23 @@ export class ChatView extends LitElement {
     this.onLoadMore();
   }
 
+  /** An open question older than the loaded messages still needs its form. */
+  private renderEarlierQuestion() {
+    const ask = this.openQuestion();
+    if (ask === undefined || this.questionIds.has(ask.askId)) return nothing;
+    return html`<ask-user-card class="part open-question-card" .ask=${ask} .open=${true}
+      .draftSessionId=${this.askDraftSessionId} .onSubmit=${this.onSubmitAsk}
+      .onActionsChange=${this.onQuestionActionsChange === undefined ? undefined : this.handleQuestionActionsChange}
+    ></ask-user-card>`;
+  }
+
   private openQuestion() {
     const ask = openTranscriptQuestion(this.messages, {
       historyReady: this.historyReady,
       messageEnd: this.messageEnd,
       messageTotal: this.messageTotal,
       writable: this.onSubmitAsk !== undefined,
+      earlierAsk: this.earlierAsk,
     });
     return ask === undefined || this.queuedAskIds.includes(ask.askId) ? undefined : ask;
   }

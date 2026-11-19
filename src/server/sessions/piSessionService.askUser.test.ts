@@ -93,6 +93,16 @@ describe("PiSessionService durable question replies", () => {
     } finally { await service.dispose(); }
   });
 
+  it("reports the open question with the transcript snapshot even when it precedes the page", async () => {
+    const { service, branch } = askService();
+    for (let index = 0; index < 5; index += 1) branch.push({ type: "message", message: { role: "user", content: `later ${index.toString()}` } });
+    try {
+      const snapshot = await service.transcriptSnapshot(sessionRef(SESSION_ID), { limit: 2 });
+      expect(snapshot.page.messages).toHaveLength(2);
+      expect(snapshot.openAsk).toEqual(ask);
+    } finally { await service.dispose(); }
+  });
+
   it("answers an earlier request after later conversation and a newer request", async () => {
     const { service, fake, branch } = askService();
     branch.push({ type: "message", message: { role: "user", content: "Continue with the design" } }, {

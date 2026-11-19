@@ -44,6 +44,29 @@ it("seeds extension UI from the snapshot, applies live updates, and lets toasts 
   controller.dispose();
 });
 
+it("keeps the snapshot's open question until the branch changes", async () => {
+  const socket = new EmitSocket();
+  let state: AppState = { ...initialAppState(), selectedWorkspace: workspace, sessions: [oldSession] };
+  const openAsk = { askId: "ask-1", askedAt: "2026-07-20T10:00:00.000Z", questions: [{ id: "q", question: "Choose?", options: [] }] };
+  const refreshed = deferred<Awaited<ReturnType<typeof defaultApi.transcriptSnapshot>>>();
+  const transcriptSnapshot = vi.fn<typeof defaultApi.transcriptSnapshot>()
+    .mockResolvedValueOnce({ page: emptyPage, status: status(oldSession.id), seq: 0, partial: null, openAsk })
+    .mockReturnValueOnce(refreshed.promise);
+  const controller = new SessionController(
+    () => state,
+    (patch) => { state = { ...state, ...patch }; },
+    () => undefined,
+    undefined,
+    { socket, api: { ...defaultApi, transcriptSnapshot } },
+  );
+  await controller.selectSession(oldSession, { updateUrl: false });
+  await vi.waitFor(() => { expect(state.openAsk).toEqual(openAsk); });
+  socket.emit({ type: "session.tree.changed", seq: 1 });
+  expect(state.openAsk).toBeUndefined();
+  refreshed.resolve({ page: emptyPage, status: status(oldSession.id), seq: 1, partial: null });
+  controller.dispose();
+});
+
 it("forgets the previous session's widgets as soon as another session is selected", () => {
   const socket = new EmitSocket();
   const other = { ...oldSession, id: "other-session" };

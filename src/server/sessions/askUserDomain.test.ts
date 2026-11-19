@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  ASK_USER_ANSWERS_CUSTOM_TYPE,
   ASK_USER_COMMENT_MAX_LENGTH, ASK_USER_ID_MAX_LENGTH, ASK_USER_OPTION_LIMIT, ASK_USER_OTHER_TEXT_MAX_LENGTH, ASK_USER_QUESTION_LIMIT, ASK_USER_TEXT_MAX_LENGTH,
   type AskUserQuestion,
 } from "../../shared/apiTypes.js";
-import { AskUserValidationError, createAskUserOutcome, createAskUserRequest, renderAskUserAnswersText, resolveAskUserRequest } from "./askUserDomain.js";
+import { AskUserValidationError, createAskUserOutcome, createAskUserRequest, openAskUserRequest, renderAskUserAnswersText, resolveAskUserRequest } from "./askUserDomain.js";
 
 const askedAt = "2026-01-01T00:00:00.000Z";
 const closedAt = "2026-01-01T00:01:00.000Z";
@@ -19,6 +20,24 @@ function request(questions: AskUserQuestion[] = [question("q1"), question("q2")]
 function resultEntry(ask: unknown, patch: Record<string, unknown> = {}) {
   return { type: "message", message: { role: "toolResult", toolName: "ask_user", isError: false, details: { ask }, ...patch } };
 }
+
+describe("the open question", () => {
+  const result = (ask: unknown, details: Record<string, unknown> = {}) => ({ role: "toolResult", toolName: "ask_user", isError: false, details: { ask, ...details } });
+  const answer = (askId: string) => ({ role: "custom", customType: ASK_USER_ANSWERS_CUSTOM_TYPE, details: { askId } });
+  const chat = { role: "user", content: "later" };
+
+  it("is the latest question until an answer, skip or newer question closes it", () => {
+    const first = request();
+    const second = { ...request(), askId: "ask-2" };
+    expect(openAskUserRequest([result(first), chat, chat])).toEqual(first);
+    expect(openAskUserRequest([result(first), answer("ask-1"), chat])).toBeUndefined();
+    expect(openAskUserRequest([result(first), result(second), answer("ask-1")])).toEqual(second);
+    expect(openAskUserRequest([result(first), { role: "toolResult", toolName: "ask_user", isError: false, details: { superseded: { askId: "ask-1" } } }])).toBeUndefined();
+    expect(openAskUserRequest([result(first), result(second), answer("ask-2")])).toBeUndefined();
+    expect(openAskUserRequest([chat])).toBeUndefined();
+    expect(openAskUserRequest([result({ askId: "bad" })])).toBeUndefined();
+  });
+});
 
 describe("durable ask validation", () => {
   it("normalizes a complete request without retaining caller-owned objects", () => {
