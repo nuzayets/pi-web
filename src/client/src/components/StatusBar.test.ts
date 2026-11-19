@@ -40,6 +40,17 @@ it("updates status formatting and context variants when the locale changes", asy
   }
 });
 
+it("shows extension statuses before the figures", async () => {
+  const bar = new StatusBar();
+  bar.status = status();
+  bar.extensionStatuses = ["adaptive · medium → high", "5h 40%"];
+  document.body.append(bar);
+  await bar.updateComplete;
+  const items = [...bar.shadowRoot?.querySelectorAll(".extension-status") ?? []].map((item) => item.textContent);
+  expect(items).toEqual(["adaptive · medium → high", "5h 40%"]);
+  expect(bar.shadowRoot?.querySelector(".bar")?.firstElementChild?.className).toBe("extension-statuses");
+});
+
 function status(): SessionStatus {
   return {
     sessionId: "session-1", isStreaming: true, isCompacting: false, isBashRunning: false,

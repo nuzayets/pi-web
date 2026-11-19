@@ -102,6 +102,8 @@ import type { ChatView } from "./ChatView";
 import "./PromptEditor";
 import type { PromptEditor } from "./PromptEditor";
 import "./StatusBar";
+import "./ExtensionWidgets";
+import type { ExtensionWidget, SessionExtensionUi } from "../api";
 import "./CommandPicker";
 import "./ModelPicker";
 import "./ActionPalette";
@@ -133,6 +135,8 @@ import { appStyles } from "./shared";
 
 const PI_WEB_STATUS_REFRESH_MS = 15 * 60 * 1000;
 const SELECTED_SESSION_REFRESH_MS = 30_000;
+const GOAL_STATUS_KEY = "goal";
+const NO_EXTENSION_WIDGETS: readonly ExtensionWidget[] = [];
 const PI_WEB_STATUS_DEFER_MS = 750;
 const REMOTE_ROUTE_RESTORE_RETRY_DELAYS_MS = [1_000, 3_000, 8_000, 15_000, 30_000] as const;
 const WORKSPACE_DELETION_RECONCILE_RETRY_DELAYS_MS = [1_000, 2_000, 5_000, 10_000] as const;
@@ -4364,8 +4368,22 @@ export class PiWebApp extends LitElement {
   }
 
   private renderStatusBar(state: AppState) {
-    return html`<status-bar slot="status" .status=${state.status}></status-bar>`;
+    return html`<status-bar slot="status" .status=${state.status} .extensionStatuses=${this.extensionStatusTexts(state.extensionUi)}></status-bar>`;
   }
+
+  private extensionStatusSource: SessionExtensionUi | undefined;
+  private extensionStatusTextsCache: readonly string[] = [];
+
+  /** Same array while the statuses are unchanged, so the status bar skips re-rendering. */
+  private extensionStatusTexts(ui: SessionExtensionUi | undefined): readonly string[] {
+    if (ui !== this.extensionStatusSource) {
+      this.extensionStatusSource = ui;
+      this.extensionStatusTextsCache = Object.entries(ui?.statuses ?? {}).flatMap(([key, text]) => key === GOAL_STATUS_KEY ? [] : [text]);
+    }
+    return this.extensionStatusTextsCache;
+  }
+
+  private readonly handleExtensionWidgetCommand = (command: string) => { void this.sessions.runCommand(command); };
 
   private readonly handleOpenNavigationSection = (section: NavigationSection) => { this.openNavigationSection(section); };
   private readonly handleReloadApp = () => { this.hardReloadApp(); };
@@ -4652,8 +4670,9 @@ export class PiWebApp extends LitElement {
           <div class="mobile-navigation-panel">${this.appShell.isMobileNavigationLayout ? this.renderNavigationPanel() : null}</div>
           ${state.selectedSession && !this.sessions.isChatLoadDeferred && (this.isChatVisible() || this.displayedChatIdentity === selectedChatIdentity(state)) ? html`
             ${this.isChatVisible() ? html`<conversation-sync-notice .state=${state.conversationSync} .onRetry=${() => { void this.sessions.resumeSelectedSession({ reconnect: true }); }}></conversation-sync-notice>` : null}
-            <conversation-layout .questionActions=${questionActions} .onChatMode=${this.handleChatMode} .status=${state.status} .activity=${state.activity} .sending=${state.sendingPrompts[state.selectedSession.id] === true} .visualEffects=${this.chatBehaviors.visualEffects}>
+            <conversation-layout .questionActions=${questionActions} .onChatMode=${this.handleChatMode} .status=${state.status} .activity=${state.activity} .sending=${state.sendingPrompts[state.selectedSession.id] === true} .visualEffects=${this.chatBehaviors.visualEffects} .goal=${state.extensionUi?.statuses[GOAL_STATUS_KEY]} .toasts=${state.extensionToasts}>
             ${this.renderChatView(state, state.selectedSession)}
+            <extension-widgets .widgets=${state.extensionUi?.widgets ?? NO_EXTENSION_WIDGETS} .onRunCommand=${this.handleExtensionWidgetCommand}></extension-widgets>
             <div class="composer-area" slot="composer">
               <prompt-editor .chatNavigation=${this.chatNavigation} ?inert=${activityNoticeVisible || this.isRevertingMessage(state)} .promptChips=${this.selectedPromptChips()} .onRemoveChip=${this.handleRemovePromptChip} .shortcuts=${this.shortcutConfig} .defaultStreamingBehavior=${this.defaultStreamingBehavior} .sessionId=${state.selectedSession.id} .cwd=${state.selectedWorkspace?.path} .machineId=${selectedMachineId(state)} .projectId=${state.selectedWorkspace?.projectId} .workspaceId=${state.selectedWorkspace?.id} .attachmentsFolder=${workspaceEffectiveAttachmentsFolder(state.selectedWorkspace?.effectiveConfig, this.workspaceAttachmentsDefaultFolder)} .disabled=${state.selectedSession.archived === true || activityNoticeVisible || this.isRevertingMessage(state)} .canSteer=${state.status?.isStreaming === true} .isCompacting=${state.status?.isCompacting === true} .canStop=${state.status?.isStreaming === true || state.status?.isBashRunning === true || state.status?.isCompacting === true || (state.status?.pendingMessageCount ?? 0) > 0} .status=${state.status} .availableThinkingLevels=${state.availableThinkingLevels} .sending=${state.sendingPrompts[state.selectedSession.id] === true} .onSend=${this.handleSendPrompt} .onStop=${this.handleStopActiveWork} .onSelectModel=${this.handleSelectModel} .onSelectThinking=${this.handleSelectThinking}></prompt-editor>
               ${this.renderSessionActivityNotice()}

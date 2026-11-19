@@ -18,6 +18,8 @@ export class StatusBar extends LitElement {
   }
 
   @property({ attribute: false }) status: SessionStatus | undefined;
+  /** Extension status texts, shown left of the figures in the order extensions set them. */
+  @property({ attribute: false }) extensionStatuses: readonly string[] = [];
 
   override render() {
     const status = this.status;
@@ -34,6 +36,7 @@ export class StatusBar extends LitElement {
     const tokens = status.tokens;
     return html`
       <div class="bar">
+        ${this.extensionStatuses.length === 0 ? null : html`<span class="extension-statuses">${this.extensionStatuses.map((text) => html`<span class="extension-status" title=${text}>${text}</span>`)}</span>`}
         <span>↑${formatTokenCount(tokens.input)}</span>
         <span>↓${formatTokenCount(tokens.output)}</span>
         <span class="context">${contextText}</span>

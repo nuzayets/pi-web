@@ -693,6 +693,13 @@ export class ChatView extends LitElement {
     this.scrollFlows.savePosition(chatScrollScopeKey(this.machineId, sessionId));
   }
 
+  /** Keeps the latest lines in view when content below the chat takes `shrunkBy` pixels from it. */
+  keepEndAfterShrink(shrunkBy: number): void {
+    const chat = this.chat;
+    if (chat === undefined || shrunkBy <= 0) return;
+    if (chat.scrollHeight - (chat.clientHeight + shrunkBy) - chat.scrollTop < 2) chat.scrollTop = chat.scrollHeight - chat.clientHeight;
+  }
+
   private scrollAnchorElements(): HTMLElement[] {
     return Array.from(this.renderRoot.querySelectorAll<HTMLElement>("[data-scroll-anchor-id]"));
   }

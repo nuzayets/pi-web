@@ -43,6 +43,7 @@ import { projectBrowserMessage } from "../browserMessageProjection.js";
 import { isSessionMediaId } from "../../shared/sessionMedia.js";
 import { getBuiltinExtensionFactories } from "./builtinExtensionFactories.js";
 import { McpAuthFlowService } from "./mcpAuthFlowService.js";
+import { SessionExtensionUiState } from "./sessionExtensionUi.js";
 import {
   SESSION_STATE_CUSTOM_TYPE, SESSION_STATE_RESET_CUSTOM_TYPE, createSessionStateData, latestSessionStateEntries, readSessionState,
   validateSessionStateNamespace, type SessionStateData, type SessionStateSnapshot, type SessionStateWrite,
@@ -1246,6 +1247,7 @@ export class PiSessionService implements SessionRouteService {
   private readonly startupSessions = new Map<string, PiAgentSession>();
   private readonly activities = new Map<string, Omit<SessionActivity, "sessionId" | "runtimePresentation"> & { runtimePresentation: RuntimeActivityPresentation }>();
   private readonly heartbeat: NodeJS.Timeout;
+  private readonly extensionUi: SessionExtensionUiState;
   private readonly statistics = new SessionStatistics();
   private readonly commandService: SessionCommandService<PiAgentSession>;
   /** Runtime-identity gate held while Pi may await abandoned-branch summarization. */
@@ -1426,6 +1428,7 @@ export class PiSessionService implements SessionRouteService {
     this.createAgentRuntime = deps.createAgentRuntime ?? defaultCreateAgentRuntime;
     this.workspaceActivity = deps.workspaceActivity;
     this.heartbeat = setInterval(() => { this.publishHeartbeats(); }, deps.heartbeatIntervalMs ?? 2000);
+    this.extensionUi = new SessionExtensionUiState((sessionId, ui) => { this.events.publish(sessionId, { type: "extension.ui", ui }); });
     this.commandService = new SessionCommandService(
       (sessionId) => this.getActive(this.activeSessionRef(sessionId)),
       (sessionId, text) => this.prompt(this.activeSessionRef(sessionId), text, undefined, undefined, { echoUserMessage: false }),
@@ -1572,6 +1575,7 @@ export class PiSessionService implements SessionRouteService {
     this.unreadPublicationStopped = true;
     this.clearUnreadPublicationRetry();
     clearInterval(this.heartbeat);
+    this.extensionUi.dispose();
     this.clearCompactionDrainTimers();
     // Same startup-park hazard as closeActive(): settle `session_start` dialogs
     // of sessions still binding extensions before awaiting their pending opens.
@@ -2970,6 +2974,7 @@ export class PiSessionService implements SessionRouteService {
       status: this.statusFromSession(session, transcriptMessageCount(branch) + echoes.length),
       seq: this.events.currentSeq(session.sessionId),
       partial: this.publishedAssistantPartials.get(session) ?? null,
+      extensionUi: this.extensionUi.snapshot(session.sessionId),
     };
   }
 
@@ -3778,6 +3783,7 @@ export class PiSessionService implements SessionRouteService {
     }
     this.workspaceActivity?.removeSession(sessionId, session.sessionManager.getCwd());
     this.activities.delete(sessionId);
+    this.extensionUi.forget(sessionId);
   }
 
   private async reloadSessionRuntime(session: PiAgentSession): Promise<void> {
@@ -3796,6 +3802,7 @@ export class PiSessionService implements SessionRouteService {
               // The SDK invalidated the old runner. Settle its dialogs before
               // replacement session_start handlers can open new ones.
               this.endSessionExtensionDialogs(session.sessionId);
+              this.extensionUi.forget(session.sessionId);
               reloadBoundary.beforeSessionStart = true;
               if (priorGeneration === undefined) return;
               candidateGeneration = this.notificationStore.beginReplacement(priorGeneration, notificationIdentityForSession(session));
@@ -4471,6 +4478,7 @@ export class PiSessionService implements SessionRouteService {
     this.active.delete(sessionId);
     this.events.mediaIndex.forgetSession({ id: sessionId, cwd: active.runtime.session.sessionManager.getCwd() });
     this.activities.delete(sessionId);
+    this.extensionUi.forget(sessionId);
     const session = active.runtime.session;
     const cwd = session.sessionManager.getCwd();
     this.workspaceActivity?.removeSession(sessionId, cwd);
@@ -4493,6 +4501,8 @@ export class PiSessionService implements SessionRouteService {
     } finally {
       await this.activityMarker.release(active.runtime.session.sessionFile);
       await active.runtime.dispose();
+      // Shutdown handlers can still set statuses and widgets.
+      if (!this.active.has(sessionId)) this.extensionUi.forget(sessionId);
     }
   }
 
@@ -4806,6 +4816,7 @@ export class PiSessionService implements SessionRouteService {
           // holds for this session; settle those waits before the new
           // runtime's extensions can open fresh dialogs under the same id.
           this.endSessionExtensionDialogs(boundSession.sessionId);
+          this.extensionUi.forget(boundSession.sessionId);
           const changedIdentity = boundSession.sessionId !== session.sessionId;
           boundSession = session;
           // Publish existence as soon as status/dialog APIs can address it,
@@ -4852,6 +4863,7 @@ export class PiSessionService implements SessionRouteService {
         if (candidate !== active) continue;
         this.active.delete(sessionId);
         this.activities.delete(sessionId);
+        this.extensionUi.forget(sessionId);
         this.clearAuthLossWarningsForSession(sessionId);
         this.clearCompactionPromptQueue(sessionId);
         removedActive = true;
@@ -4999,6 +5011,11 @@ export class PiSessionService implements SessionRouteService {
         operation.notify(message);
         return;
       }
+      // Like Pi's terminal UI, info notices pass; warnings and errors stay in the inbox.
+      if (type === undefined || type === "info") {
+        this.events.publish(session.sessionId, { type: "extension.toast", message });
+        return;
+      }
       if (generation === undefined) {
         this.events.publish(session.sessionId, {
           type: "command.output",
@@ -5019,6 +5036,12 @@ export class PiSessionService implements SessionRouteService {
       get: (target, property, receiver): unknown => {
         if (property === "notify") return notify;
         if (property === "theme") return plainTextTheme;
+        if (property === "setStatus") {
+          return (key: string, text: string | undefined) => { this.extensionUi.setStatus(session.sessionId, key, text); };
+        }
+        if (property === "setWidget") {
+          return (key: string, content: unknown, options?: unknown) => { this.extensionUi.setWidget(session.sessionId, key, content, options); };
+        }
         if (property === "confirm") {
           return (title: string, message: string, opts?: ExtensionUIDialogOptions) =>
             McpAuthFlowService.current(session)?.confirm(title, message, opts)

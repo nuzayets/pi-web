@@ -28,6 +28,10 @@ import { pendingSessionMessages as pendingMessages, PendingSessionError } from "
 import { sessionFeedbackMessages as feedbackMessages, SessionFeedbackError } from "./sessionFeedbackMessages";
 
 const MESSAGE_PAGE_SIZE = 100;
+const EXTENSION_TOAST_MS = 6000;
+const EXTENSION_TOAST_MS_PER_CHAR = 50;
+const EXTENSION_TOAST_MAX_MS = 30_000;
+const EXTENSION_TOAST_LIMIT = 3;
 const PENDING_SESSION_START_SCOPE = ["machine", "project", "workspace", "session"] as const;
 const SESSION_RESTORE_SCOPE = ["machine", "project", "workspace", "session"] as const;
 
@@ -171,6 +175,8 @@ export class SessionController {
   // current, its loaded state/socket can outlive changes to the URL spelling.
   private selectedSessionJoinNavigation: NavigationFreshness | undefined;
   private disposed = false;
+  private nextExtensionToastId = 0;
+  private extensionUiSeq: { sessionId: string; seq: number } | undefined;
   // Ownership survives transport reconnects, but not a terminal socket close.
   private selectedSessionSubscriptionSeq: number | undefined;
   private sessionConnectionOpen = false;
@@ -259,7 +265,7 @@ export class SessionController {
     // that is still sending; the per-session entry is cleared by send()'s
     // finally block when the request settles.
     this.sessionConnectionOpen = false;
-    this.setState({ selectedSession: undefined, conversationSync: undefined, conversationRefreshedAt: undefined, messages: [], messagePageStart: 0, messagePageEnd: 0, messagePageTotal: 0, isLoadingEarlierMessages: false, status: undefined, activity: undefined, pendingDialogs: [], closedDialogs: [], availableThinkingLevels: [], treeDialog: undefined });
+    this.setState({ selectedSession: undefined, conversationSync: undefined, conversationRefreshedAt: undefined, messages: [], messagePageStart: 0, messagePageEnd: 0, messagePageTotal: 0, isLoadingEarlierMessages: false, status: undefined, activity: undefined, pendingDialogs: [], closedDialogs: [], extensionUi: undefined, extensionToasts: [], availableThinkingLevels: [], treeDialog: undefined });
   }
 
   deselectSession(options?: { forgetRememberedSelection?: boolean | undefined; updateUrl?: boolean | undefined }) {
@@ -397,6 +403,8 @@ export class SessionController {
       activity: session.archived === true ? undefined : this.getState().sessionActivities[session.id],
       pendingDialogs: session.archived === true ? [] : (this.getState().sessionStatuses[session.id]?.pendingDialogs ?? []),
       closedDialogs: [],
+      extensionUi: undefined,
+      extensionToasts: [],
       availableThinkingLevels: [],
     });
     if (this.selectedSessionLoadDeferred) {
@@ -413,7 +421,7 @@ export class SessionController {
         if (seq !== this.selectionSeq || this.getState().selectedSession?.id !== session.id || !navigationIsCurrent(options?.navigation)) return;
         this.browserErrors.clearRecovered(recoveryError);
         const history = this.transcripts.mergeHistory(transcriptKey, page);
-        this.setState({ ...history, isLoadingEarlierMessages: false, status: undefined, activity: undefined, pendingDialogs: [], closedDialogs: [] });
+        this.setState({ ...history, isLoadingEarlierMessages: false, status: undefined, activity: undefined, pendingDialogs: [], closedDialogs: [], extensionUi: undefined, extensionToasts: [] });
         this.onSelectedSessionReady?.({ machineId, session });
         if (options?.updateUrl !== false) this.updateUrl();
         return;
@@ -1020,7 +1028,7 @@ export class SessionController {
         sessions: nextSessions,
         sessionStatuses: omitKeys(state.sessionStatuses, affectedIds),
         sessionActivities: omitKeys(state.sessionActivities, affectedIds),
-        ...(selectedAffected ? { status: undefined, activity: undefined, pendingDialogs: [], closedDialogs: [] } : {}),
+        ...(selectedAffected ? { status: undefined, activity: undefined, pendingDialogs: [], closedDialogs: [], extensionUi: undefined, extensionToasts: [] } : {}),
       });
       const expected = this.navigationSelection();
 
@@ -1692,6 +1700,11 @@ export class SessionController {
         this.applyStatus(status);
         this.lastAppliedSelectedRefresh = { selectionSeq: target.selectionSeq, partialJson: selectedRefreshPartialJson(snapshot) };
       }
+      const { extensionUi } = snapshot;
+      if (extensionUi !== undefined) {
+        this.extensionUiSeq = { sessionId: target.session.id, seq: snapshot.seq };
+        if (JSON.stringify(extensionUi) !== JSON.stringify(this.getState().extensionUi)) this.setState({ extensionUi });
+      }
       appliedHistoryRevision = this.transcripts.historyRevision(key);
       appliedStatus = status;
     } catch (error) {
@@ -1942,6 +1955,8 @@ export class SessionController {
       activity,
       pendingDialogs: [],
       closedDialogs: [],
+      extensionUi: undefined,
+      extensionToasts: [],
       availableThinkingLevels: [],
       treeDialog: undefined,
       ...(activity === undefined ? {} : { sessionActivities: { ...state.sessionActivities, [session.id]: activity } }),
@@ -2335,12 +2350,27 @@ export class SessionController {
     });
   }
 
+  private showExtensionToast(message: string): void {
+    this.nextExtensionToastId += 1;
+    const id = this.nextExtensionToastId;
+    this.setState({ extensionToasts: [...this.getState().extensionToasts, { id, message }].slice(-EXTENSION_TOAST_LIMIT) });
+    setTimeout(() => {
+      const toasts = this.getState().extensionToasts;
+      if (!this.disposed && toasts.some((toast) => toast.id === id)) this.setState({ extensionToasts: toasts.filter((toast) => toast.id !== id) });
+    }, Math.min(EXTENSION_TOAST_MAX_MS, EXTENSION_TOAST_MS + message.length * EXTENSION_TOAST_MS_PER_CHAR));
+  }
+
   private applyEvent(event: SessionUiEvent) {
     // Notification revisions use their own join snapshot. Handle them before the
     // transcript watermark so a notification event sharing an already-seeded
     // transcript sequence cannot be lost.
     if (event.type === "notifications.inbox") {
       this.notifications?.applyInboxEvent(selectedMachineId(this.getState()), event);
+      return;
+    }
+    // Toasts are not in the snapshot either.
+    if (event.type === "extension.toast") {
+      this.showExtensionToast(event.message);
       return;
     }
     const buffer = this.refreshEventBuffer;
@@ -2355,6 +2385,12 @@ export class SessionController {
 
     if (event.type === "session.tree.changed") {
       this.invalidateSessionTree();
+      return;
+    }
+    if (event.type === "extension.ui") {
+      const applied = this.extensionUiSeq;
+      const stale = applied !== undefined && applied.sessionId === this.getState().selectedSession?.id && event.seq !== undefined && event.seq <= applied.seq;
+      if (!stale) this.setState({ extensionUi: event.ui });
       return;
     }
 

@@ -4,6 +4,7 @@ import { questionActionStyles, type QuestionActions } from "./questionActions";
 import { uiButtonStyles } from "./ui/controlStyles";
 import { askUserMessages } from "./AskUserCard";
 import type { SessionActivity, SessionStatus } from "../api";
+import type { ExtensionToast } from "../appState";
 import { stylesheetIntegrationCapability } from "../plugins/styles";
 import { conversationLayoutStyles } from "../theme/base/conversationLayoutStyles";
 import { localization, LocalizationController } from "../localization/browser";
@@ -45,6 +46,13 @@ export function conversationActivityText(status: SessionStatus | undefined, acti
   return detail !== undefined && detail !== "" ? messages.t("summary", { label, detail }) : label;
 }
 
+/** pi-goal's status text: green while active, grey when complete, amber when it waits. */
+export function goalTone(goal: string): "active" | "complete" | "attention" {
+  if (goal.startsWith("active")) return "active";
+  if (goal === "complete") return "complete";
+  return "attention";
+}
+
 /** Owns the transcript/composer boundary; children own their content and actions. */
 @customElement("conversation-layout")
 export class ConversationLayout extends LitElement {
@@ -60,6 +68,9 @@ export class ConversationLayout extends LitElement {
   @property({ type: Boolean }) visualEffects = true;
   @property({ attribute: false }) questionActions: QuestionActions | undefined;
   @property({ attribute: false }) onChatMode: (() => void) | undefined;
+  /** The session's goal status, shown as a pill over the transcript. */
+  @property({ attribute: false }) goal: string | undefined;
+  @property({ attribute: false }) toasts: readonly ExtensionToast[] = [];
   @state() private chatMode = false;
 
   protected override willUpdate(changed: PropertyValues<this>): void {
@@ -81,7 +92,13 @@ export class ConversationLayout extends LitElement {
     const activity = conversationActivityText(this.status, this.activity, this.sending);
     const answering = this.questionActions !== undefined && !this.chatMode;
     return html`
-      <div class="transcript"><slot></slot></div>
+      <div class="transcript">
+        <slot></slot>
+        ${this.goal === undefined ? nothing : html`
+          <div class="goal" data-tone=${goalTone(this.goal)} title=${messages.t("goal", { goal: this.goal })}><span class="goal-dot"></span><span class="goal-label">${messages.t("goalLabel")}</span><span class="goal-text">${this.goal}</span></div>
+        `}
+        <div class="toasts" role="status">${this.toasts.map((toast) => html`<div class="toast">${toast.message}</div>`)}</div>
+      </div>
       <div class="composer-boundary">
         ${this.questionActions === undefined ? nothing : html`
           <div class="question-mode">

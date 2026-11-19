@@ -830,7 +830,10 @@ describe("PiSessionService lifecycle, listing, and reload", () => {
       return Promise.resolve();
     };
     fake.session.prompt = (text) => {
-      if (text === "/ctx-stats") extensionNotify?.("context-mode stats", "info");
+      if (text === "/ctx-stats") {
+        extensionNotify?.("context-mode stats", "warning");
+        extensionNotify?.("context-mode passing", "info");
+      }
       return Promise.resolve();
     };
     const service = new PiSessionService(hub, {
@@ -851,13 +854,15 @@ describe("PiSessionService lifecycle, listing, and reload", () => {
       sessionId: "extension-command-session",
       event: {
         type: "notifications.inbox",
-        delta: { kind: "added", notification: { message: "context-mode stats", severity: "info" } },
+        delta: { kind: "added", notification: { message: "context-mode stats", severity: "warning" } },
       },
     });
     expect(hub.notificationSummaryEvents.at(-1)).toMatchObject({
       type: "notifications.summary",
-      summary: { sessionId: "extension-command-session", retainedCount: 1, highestSeverity: "info" },
+      summary: { sessionId: "extension-command-session", retainedCount: 1, highestSeverity: "warning" },
     });
+    // Info notices pass like Pi's terminal toasts instead of filling the inbox.
+    expect(hub.sessionEvents).toContainEqual({ sessionId: "extension-command-session", event: { type: "extension.toast", message: "context-mode passing" } });
 
     await service.dispose();
   });
@@ -919,7 +924,7 @@ describe("PiSessionService lifecycle, listing, and reload", () => {
     const oldNotify = boundNotify(fake);
     oldNotify("old notification", "warning");
     fake.session.reload = async (options) => {
-      oldNotify("shutdown notification", "info");
+      oldNotify("shutdown notification", "warning");
       await options?.beforeSessionStart?.();
       const replacementStartup = fake.session.extensionRunner.getUIContext().theme.fg("error", "replacement startup");
       currentNotify(fake)(replacementStartup, "error");
@@ -953,7 +958,7 @@ describe("PiSessionService lifecycle, listing, and reload", () => {
     });
 
     await service.status(sessionRef("failed-runtime-reload"));
-    boundNotify(fake)("prior", "info");
+    boundNotify(fake)("prior", "warning");
     fake.session.reload = async (options) => {
       await options?.beforeSessionStart?.();
       currentNotify(fake)("candidate before failure", "warning");
@@ -1063,7 +1068,7 @@ describe("PiSessionService lifecycle, listing, and reload", () => {
     });
 
     await service.start("/workspace");
-    boundNotify(first)("prior", "info");
+    boundNotify(first)("prior", "warning");
     Object.defineProperty(first.runtime, "session", { configurable: true, value: replacement.session });
     await expect(rebindSession?.(replacement.session)).rejects.toThrow("replacement bind failed");
 
@@ -1365,7 +1370,7 @@ describe("PiSessionService lifecycle, listing, and reload", () => {
     oldNotify("old", "warning");
     const disposeFirst = first.runtime.dispose.bind(first.runtime);
     first.runtime.dispose = async () => {
-      oldNotify("old shutdown", "info");
+      oldNotify("old shutdown", "warning");
       await disposeFirst();
     };
     await service.reload(sessionRef("reload-notification-session"));
@@ -1403,10 +1408,10 @@ describe("PiSessionService lifecycle, listing, and reload", () => {
 
     await service.status(sessionRef("failed-disk-reload"));
     const oldNotify = boundNotify(first);
-    oldNotify("prior", "info");
+    oldNotify("prior", "warning");
     const disposeFirst = first.runtime.dispose.bind(first.runtime);
     first.runtime.dispose = async () => {
-      oldNotify("old shutdown", "info");
+      oldNotify("old shutdown", "warning");
       await disposeFirst();
     };
     await expect(service.reload(sessionRef("failed-disk-reload"))).rejects.toThrow("replacement open failed");
@@ -1438,7 +1443,7 @@ describe("PiSessionService lifecycle, listing, and reload", () => {
     const oldNotify = boundNotify(first);
     oldNotify("prior", "warning");
     first.runtime.dispose = () => {
-      oldNotify("shutdown before close failure", "info");
+      oldNotify("shutdown before close failure", "warning");
       return Promise.reject(new Error("close failed"));
     };
 

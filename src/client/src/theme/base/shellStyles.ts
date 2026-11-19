@@ -211,6 +211,9 @@ export const statusBarStyles = css`
   :host { display: block; margin-block-end: calc(0px - var(--pi-app-safe-area-bottom, 0px)); color: var(--pi-muted); font: 12px var(--pi-font, system-ui, sans-serif); }
   .bar { box-sizing: border-box; display: flex; justify-content: flex-end; gap: 12px; align-items: center; min-width: 0; min-height: max(32px, var(--pi-app-safe-area-bottom, 0px)); padding: 7px 12px; border-top: 1px solid var(--pi-border); background: var(--pi-bg); white-space: nowrap; overflow: hidden; }
   span { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  /* Statuses that don't fit wrap out of view, so whole items drop instead of clipping mid-word. */
+  .extension-statuses { flex: 1 1 0; display: flex; flex-wrap: wrap; gap: 0 12px; height: 16px; line-height: 16px; }
+  .extension-statuses .extension-status { flex: none; max-width: 100%; }
   .activity { display: inline-flex; align-items: center; gap: 6px; color: var(--pi-muted); }
   .activity.active { color: var(--pi-success); }
   .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; opacity: .45; flex: 0 0 auto; }
