@@ -58,7 +58,8 @@ jobs:
           npx --yes tsrs@7.1.0-beta.tsrs3 --noEmit
           npm run build
           npm pkg set piWebFork.release="${{ steps.pick.outputs.tag }}"
-          mv "$(npm pack --ignore-scripts --silent)" pi-web.tgz
+          npm pack --ignore-scripts --pack-destination packed
+          mv packed/*.tgz pi-web.tgz
 
       # Tagging this branch, not local, keeps upstream's release-triggered workflows from running here.
       - name: Publish
