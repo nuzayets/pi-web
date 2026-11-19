@@ -1,5 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
+import "./vitest.isolation.js";
 
 export default defineConfig({
   // Standalone examples consume the public entry, without requiring a prior build.
