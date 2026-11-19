@@ -183,6 +183,25 @@ describe("localization", () => {
     expect(messages.t("cancel")).toBe("Annuler");
   });
 
+  it("reuses Intl formatters across formats until preferences change", async () => {
+    const { service, messages } = setup();
+    const numberFormat = vi.spyOn(Intl, "NumberFormat");
+    const pluralRules = vi.spyOn(Intl, "PluralRules");
+    try {
+      for (let count = 0; count < 5; count += 1) {
+        messages.t("files", { count });
+        service.number(count);
+      }
+      expect(numberFormat).toHaveBeenCalledOnce();
+      expect(pluralRules).toHaveBeenCalledOnce();
+      await service.setPreferences({ language: "en", formatLocale: "sv-SE" });
+      expect(service.number(1234.5)).toBe(new Intl.NumberFormat("sv-SE").format(1234.5));
+    } finally {
+      numberFormat.mockRestore();
+      pluralRules.mockRestore();
+    }
+  });
+
   it("publishes preferences and healthy catalogs without waiting for an unrelated stalled pack", async () => {
     const { service, messages } = setup();
     const healthy = deferred<Record<string, string>>();
