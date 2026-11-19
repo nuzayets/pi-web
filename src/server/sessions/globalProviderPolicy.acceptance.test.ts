@@ -249,7 +249,7 @@ function parseToolMarker(raw: string): { activeTools: string[]; allTools: string
 }
 
 describe("immutable global provider bootstrap acceptance", () => {
-  it("rejects a shared virtual router in two real sessions through reload and disposal without cross-session contamination", async () => {
+  it("shares a virtual router between two real sessions through reload and disposal", async () => {
     const agentDir = await agentDirWithExtension(globalProvidersSource());
     await writeFile(join(agentDir, "settings.json"), `${JSON.stringify({ defaultProjectTrust: "always" })}\n`);
     const { service, events, runtime, logEntries } = await policyHarness({ agentDir });
@@ -274,8 +274,8 @@ describe("immutable global provider bootstrap acceptance", () => {
         pi.on("session_shutdown", () => pi.unregisterVirtualModel("shared-router", "auto"));
       }
     `;
-    const firstCwd = await projectWithExtension(source("first-secret-router"));
-    const secondCwd = await projectWithExtension(source("second-secret-router"));
+    const firstCwd = await projectWithExtension(source("first-router"));
+    const secondCwd = await projectWithExtension(source("second-router"));
     const first = { id: (await service.start(firstCwd)).id, cwd: firstCwd };
     const second = { id: (await service.start(secondCwd)).id, cwd: secondCwd };
     expect(first.id).not.toBe(second.id);
@@ -284,33 +284,22 @@ describe("immutable global provider bootstrap acceptance", () => {
       sessionId === ref.id && event.type === "session.error" ? [event.message] : []);
     for (const ref of [first, second]) {
       const warnings = (await service.status(ref)).warnings ?? [];
-      expect(warnings.filter((warning) => warning.severity === "error").map((warning) => warning.message))
-        .toContainEqual(expect.stringContaining("PI WEB does not support registerVirtualModel()"));
-      expect(errorMessages(ref)).toContainEqual(expect.stringContaining("select a physical model instead"));
-      await expect(service.setModel(ref, "shared-router", "auto")).rejects.toThrow(/not found/i);
+      expect(warnings.filter((warning) => warning.severity === "error")).toEqual([]);
+      expect(errorMessages(ref)).toEqual([]);
+      expect((await service.availableModels(ref)).some((model) => model.provider === "shared-router" && model.id === "auto")).toBe(true);
     }
+    await service.setModel(second, "shared-router", "auto");
     const secondCatalog = await service.availableModels(second);
     const secondModel = (await service.status(second)).model;
-    const secondErrors = errorMessages(second);
-    expect(secondModel).toBeDefined();
-    expect(secondCatalog.some((model) => model.provider === "shared-router")).toBe(false);
+    expect(secondModel).toMatchObject({ provider: "shared-router", id: "auto" });
 
-    const errorsBeforeReload = errorMessages(first).length;
     await expect(service.runCommand(first, "/reload")).resolves.toMatchObject({ type: "done" });
-    const reloadErrors = errorMessages(first).slice(errorsBeforeReload);
-    expect(reloadErrors).toContainEqual(expect.stringContaining("PI WEB does not support unregisterVirtualModel()"));
-    expect(reloadErrors).toContainEqual(expect.stringContaining("PI WEB does not support registerVirtualModel()"));
-    expect(await service.availableModels(second)).toEqual(secondCatalog);
-    expect((await service.status(second)).model).toEqual(secondModel);
-
-    const errorsBeforeDisposal = errorMessages(first).length;
     await service.stop(first);
-    expect(errorMessages(first).slice(errorsBeforeDisposal))
-      .toContainEqual(expect.stringContaining("PI WEB does not support unregisterVirtualModel()"));
-    expect(errorMessages(second)).toEqual(secondErrors);
+    expect(errorMessages(first)).toEqual([]);
+    expect(errorMessages(second)).toEqual([]);
     expect(await service.availableModels(second)).toEqual(secondCatalog);
     expect((await service.status(second)).model).toEqual(secondModel);
-    expect(runtime.getModel("shared-router", "auto")).toBeUndefined();
+    expect(runtime.getModel("shared-router", "auto")).toBeDefined();
     expect(runtime.getRegisteredProviderConfig("global-config")).toBe(baselineConfig);
     expect(runtime.getRegisteredNativeProvider("global-native")).toBe(baselineNative);
     expect(JSON.stringify(logEntries)).not.toContain("secret");
