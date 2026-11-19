@@ -244,7 +244,7 @@ describe("applyTranscriptEvent", () => {
     const later = applyTranscriptEvent(live, { type: "assistant.delta", text: "Continue" }) ?? live;
     const reconciled = applyTranscriptEvent(later, { type: "message.end", message: finalResult }) ?? later;
     expect(reconciled.at(-1)).toEqual(textMessage("assistant", "Continue"));
-    expect(openTranscriptQuestion(reconciled, { historyReady: true, writable: true, messageEnd: 4, messageTotal: 4 })).toBeUndefined();
+    expect(openTranscriptQuestion(reconciled, { historyReady: true, writable: true, messageEnd: 4, messageTotal: 4 })).toEqual(askUserRequest);
   });
 
   it.each([
@@ -267,7 +267,7 @@ describe("applyTranscriptEvent", () => {
     expect(live.flatMap((line) => line.parts).some((part) => part.type === "askUserQuestion" || part.type === "askUserRecord")).toBe(false);
   });
 
-  it.each([{ content: [] }, { content: "" }, { content: [{ type: "text", text: "" }] }])("keeps an empty result after a question closed in live and replay (%j)", ({ content }) => {
+  it.each([{ content: [] }, { content: "" }, { content: [{ type: "text", text: "" }] }])("keeps an empty result after an open question in live and replay (%j)", ({ content }) => {
     const args = { command: "true" };
     const call = { role: "assistant", content: [{ type: "toolCall", id: "other", name: "bash", arguments: args }] };
     const question = { role: "toolResult", toolName: "ask_user", content: [], details: { ask: askUserRequest }, isError: false };
@@ -278,10 +278,10 @@ describe("applyTranscriptEvent", () => {
       const before = normalizeMessages(history);
       expect(openTranscriptQuestion(before, tail)).toEqual(askUserRequest);
       const replay = normalizeMessages([...history, result]);
-      expect(openTranscriptQuestion(replay, tail)).toBeUndefined();
+      expect(openTranscriptQuestion(replay, tail)).toEqual(askUserRequest);
       for (const type of ["message.end", "message.append"] as const) {
         const live = applyTranscriptEvent(before, { type, message: result }) ?? before;
-        expect(openTranscriptQuestion(live, tail)).toBeUndefined();
+        expect(openTranscriptQuestion(live, tail)).toEqual(askUserRequest);
         expect(live.at(-1)?.entryId).toBe("empty-result");
         // Without the call, live uses an execution card and replay a result card.
         if (history.length === 2) expect(live).toEqual(replay);
@@ -323,15 +323,15 @@ describe("applyTranscriptEvent", () => {
       { role: "assistant", content: [{ type: "toolCall", id: "other", name: "bash", arguments: args }] },
       { role: "assistant", content: [{ type: "toolCall", id: "ask-call", name: "ask_user", arguments: { questions: askUserRequest.questions } }] }, question, result,
     ]));
-    expect(openTranscriptQuestion(live, { historyReady: true, writable: true, messageEnd: 4, messageTotal: 4 })).toBeUndefined();
+    expect(openTranscriptQuestion(live, { historyReady: true, writable: true, messageEnd: 4, messageTotal: 4 })).toEqual(askUserRequest);
   });
 
-  it.each([undefined, "stream-1"])("closes a question for an empty streaming partial and finalized invisible entry (identity: %s)", (streamId) => {
+  it.each([undefined, "stream-1"])("keeps a question open past an empty streaming partial and finalized invisible entry (identity: %s)", (streamId) => {
     const question: ChatLine = { role: "tool", parts: [{ type: "askUserQuestion", ask: askUserRequest }] };
     const emptyAssistant = { role: "assistant", content: [], entryId: "later-empty", ...(streamId === undefined ? {} : { streamId }) };
     const tail = { historyReady: true, writable: true, messageEnd: 2, messageTotal: 2 };
     const history = normalizeMessages([question, emptyAssistant]);
-    expect(openTranscriptQuestion(history, tail)).toBeUndefined();
+    expect(openTranscriptQuestion(history, tail)).toEqual(askUserRequest);
     expect(seedStreamingPartial([question], emptyAssistant)).toEqual(history);
     expect(applyTranscriptEvent([question], { type: "message.end", message: emptyAssistant })).toEqual(history);
     expect(applyTranscriptEvent([question], { type: "message.append", message: emptyAssistant })).toEqual(history);
@@ -339,7 +339,7 @@ describe("applyTranscriptEvent", () => {
       const started = applyTranscriptEvent([question], { type: "assistant.start", message: emptyAssistant }) ?? [];
       const finalized = applyTranscriptEvent(started, { type: "message.end", message: emptyAssistant }) ?? [];
       expect(finalized).toEqual(history);
-      expect(openTranscriptQuestion(finalized, tail)).toBeUndefined();
+      expect(openTranscriptQuestion(finalized, tail)).toEqual(askUserRequest);
     }
     expect(groupChatMessages(history).map((group) => group.kind)).toEqual(["message"]);
   });

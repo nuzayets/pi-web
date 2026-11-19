@@ -134,7 +134,7 @@ it("discards explicitly, prevents duplicate sends, and retains answers after a f
   expect(h.chatHidden()).toBe(true);
 });
 
-it("resets chat mode for a new request or session and restores chat when questions close", async () => {
+it("resets chat mode for a new request or session and keeps an unanswered question open after a chat message", async () => {
   const h = await mount();
   h.toggle();
   await h.settle();
@@ -149,7 +149,7 @@ it("resets chat mode for a new request or session and restores chat when questio
   expect(h.chatHidden()).toBe(true);
   h.chat.messages = [...h.chat.messages, { role: "user", parts: [{ type: "text", text: "Continue in chat" }] }];
   await h.settle();
-  expect(h.chatHidden()).toBe(false);
-  expect(h.dock.querySelector(".question-mode")).toBeNull();
-  expect(h.dock.querySelector(".primary-action")).toBeNull();
+  expect(h.chatHidden()).toBe(true);
+  expect(h.dock.querySelector(".question-mode")).not.toBeNull();
+  expect(h.dock.querySelector(".primary-action")).not.toBeNull();
 });

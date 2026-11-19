@@ -18,18 +18,18 @@ it("opens a rehydrated question only on the writable, ready current tail", () =>
   expect(openTranscriptQuestion([question], { ...tail, writable: false })).toBeUndefined();
 });
 
-describe("later conversation entries close the question without needing an outcome", () => {
+describe("the question stays open until it is answered", () => {
   it.each<ChatLine>([
     { role: "user", parts: [{ type: "text", text: "Continue without answers" }] },
     { role: "assistant", parts: [{ type: "thinking", text: "plan" }] },
     { role: "assistant", parts: [{ type: "text", text: "streamed reply" }] },
     { role: "tool", parts: [{ type: "toolResultBoundary", toolCallId: "earlier-call" }] },
     { role: "system", parts: [{ type: "text", text: "Model response failed: overloaded", presentation: { kind: "modelError", detail: "overloaded" } }] },
-  ])("closes on $role/$parts.0.type", (later) => {
-    expect(openTranscriptQuestion([question, later], tail)).toBeUndefined();
+  ])("stays open after $role/$parts.0.type", (later) => {
+    expect(openTranscriptQuestion([question, later], tail)).toBe(ask);
   });
 
-  it("stays open past passive entries until the conversation continues", () => {
+  it("stays open past passive entries and later replies", () => {
     const passive = normalizeMessages([
       { role: "custom", customType: "extension.notice", content: "Build finished", display: true },
       { role: "custom", customType: "extension.hidden", content: "state", display: false },
@@ -38,7 +38,7 @@ describe("later conversation entries close the question without needing an outco
     ]);
     const messages = normalizeMessages([question, ...passive]);
     expect(openTranscriptQuestion(messages, tail)).toBe(ask);
-    expect(openTranscriptQuestion([...messages, { role: "assistant", parts: [{ type: "text", text: "Reply" }] }], tail)).toBeUndefined();
+    expect(openTranscriptQuestion([...messages, { role: "assistant", parts: [{ type: "text", text: "Reply" }] }], tail)).toBe(ask);
   });
 
   it("opens only the newer question", () => {
@@ -62,4 +62,7 @@ it("projects every response, including a partial answer and skip, without stale 
   expect(transcriptQuestionOutcomes(messages).get(ask.askId)).toEqual([reply, { ...reply, closedAt: "2026-07-20T10:06:00.000Z" }]);
   expect(transcriptQuestionOutcomes(messages).get("legacy-question")).toEqual([{ ...reply, askId: "legacy-question" }]);
   expect(openTranscriptQuestion(messages, tail)).toBeUndefined();
+  const newer = { ...ask, askId: "ask-2" };
+  const lateReply: ChatLine = { role: "system", parts: [{ type: "askUserRecord", outcome: reply }] };
+  expect(openTranscriptQuestion([question, { role: "tool", parts: [{ type: "askUserQuestion", ask: newer }] }, lateReply], tail)).toBe(newer);
 });
