@@ -145,20 +145,46 @@ function logBootstrapDiagnostic(
  * is invalidated. Bootstrap has no bound context either, so reject before load.
  * Pi surfaces these throws as bootstrap diagnostics or hosted extension errors.
  */
-function rejectVirtualModelMutations(runtime: ModelRuntime): void {
-  const reject = (operation: "registerVirtualModel" | "unregisterVirtualModel"): never => {
-    // Never echo model definitions or IDs: they may contain sensitive values.
-    throw new Error(
-      `PI WEB does not support ${operation}(): virtual-model routers capture session-bound context, `
-      + "but the model runtime is shared across sessions. Disable this extension's virtual-model feature "
-      + "and select a physical model instead.",
-    );
+type VirtualModelDefinition = Parameters<ModelRuntime["registerVirtualModel"]>[0];
+
+const VIRTUAL_MODEL_ROUTERS_KEPT = 4;
+
+/**
+ * Sessions share one model runtime, and a router calls into the extension context of the session that
+ * registered it, which fails until that session finishes loading. So each model keeps the routers of its
+ * latest registrations, and a request uses the newest one that answers. Unregistration is ignored.
+ */
+function shareVirtualModels(runtime: ModelRuntime, register: (definition: VirtualModelDefinition) => void): void {
+  const routers = new Map<string, VirtualModelDefinition[]>();
+  const shared: Pick<ModelRuntime, "registerVirtualModel" | "unregisterVirtualModel"> = {
+    registerVirtualModel: (definition) => {
+      const key = `${definition.provider}/${definition.id}`;
+      const existing = routers.get(key);
+      if (existing !== undefined) {
+        existing.unshift(definition);
+        existing.splice(VIRTUAL_MODEL_ROUTERS_KEPT);
+        return;
+      }
+      const list = [definition];
+      register({
+        ...definition,
+        route: async (request) => {
+          let failure: unknown;
+          for (const candidate of [...list]) {
+            try {
+              return await candidate.route(request);
+            } catch (error) {
+              failure = error;
+            }
+          }
+          throw failure;
+        },
+      });
+      routers.set(key, list);
+    },
+    unregisterVirtualModel: () => undefined,
   };
-  const rejectedMethods: Pick<ModelRuntime, "registerVirtualModel" | "unregisterVirtualModel"> = {
-    registerVirtualModel: () => reject("registerVirtualModel"),
-    unregisterVirtualModel: () => reject("unregisterVirtualModel"),
-  };
-  Object.assign(runtime, rejectedMethods);
+  Object.assign(runtime, shared);
 }
 
 function freezeProviderMutations(
@@ -274,8 +300,11 @@ export async function bootstrapAndFreezeGlobalExtensionProviders(
   agentDir: string,
   logger: GlobalProviderBootstrapLogger,
 ): Promise<void> {
-  rejectVirtualModelMutations(runtime);
+  const registerVirtualModel = runtime.registerVirtualModel.bind(runtime);
+  // Startup registrations are skipped: their extension context never binds.
+  runtime.registerVirtualModel = () => undefined;
   const services = await loadGlobalExtensionServices(runtime, agentDir);
+  shareVirtualModels(runtime, registerVirtualModel);
   const providerIds = Object.freeze([...runtime.getRegisteredProviderIds()].sort());
 
   freezeProviderMutations(runtime, logger, captureProviderConfigBaseline(runtime));
