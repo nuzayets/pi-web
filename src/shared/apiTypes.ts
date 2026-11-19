@@ -1474,6 +1474,30 @@ export interface SessionStreamSnapshot {
 export interface SessionTranscriptSnapshot extends SessionStreamSnapshot {
   page: MessagePage;
   status: SessionStatus;
+  /** Absent from servers without extension UI support. */
+  extensionUi?: SessionExtensionUi;
+}
+
+/** A widget button runs one of the session's slash commands. */
+export interface ExtensionWidgetAction {
+  label: string;
+  title?: string;
+  command: string;
+}
+
+/** `ctx.ui.setWidget` line content; PI WEB-specific options add a title, Markdown rendering and buttons. */
+export interface ExtensionWidget {
+  key: string;
+  lines: string[];
+  title?: string;
+  markdown?: boolean;
+  actions?: ExtensionWidgetAction[];
+}
+
+/** A session's current `ctx.ui.setStatus` texts and widgets, ANSI-free. */
+export interface SessionExtensionUi {
+  statuses: Record<string, string>;
+  widgets: ExtensionWidget[];
 }
 
 export type CommandResult =
@@ -1507,6 +1531,9 @@ type SessionUiEventBody =
   | { type: "status.update"; status: SessionStatus }
   | { type: "activity.update"; activity: SessionActivity }
   | { type: "command.output"; level: "info" | "success" | "error"; message: string; presentation?: CommandOutputPresentation }
+  | { type: "extension.ui"; ui: SessionExtensionUi }
+  /** An extension's info notice: shown briefly, never stored. */
+  | { type: "extension.toast"; message: string }
   | SessionNotificationInboxEvent
   | { type: "session.error"; message: string }
   /** Technical details for the browser console, never transcript or notification content. */

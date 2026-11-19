@@ -1,5 +1,11 @@
 import type { AuthProviderOption, CommandOption, CommandResult, ExtensionDialogAnswer, ExtensionDialogCloseReason, Machine, MachineHealth, MachineRuntime, OAuthFlowState, PendingExtensionDialog, PiWebStatusResponse, Project, QueuedSessionMessage, SessionActivity, SessionInfo, SessionModelCatalogEntry, SessionModelCatalogResponse, SessionStatus, SessionTreeSnapshot, TerminalCommandRun, Workspace, WorkspaceProviderResolution } from "./api";
 import type { ChatLine } from "./chatTypes";
+import type { SessionExtensionUi } from "../../shared/apiTypes";
+
+export interface ExtensionToast {
+  id: number;
+  message: string;
+}
 import type { MachineStatusSnapshot } from "../../shared/machineStatus";
 import type { QualifiedContributionId } from "./plugins/ids";
 import type { SelectedSessionNotificationInbox } from "./sessionNotifications";
@@ -58,6 +64,10 @@ export interface AppState {
    * the closed card; deselection and reloads drop these.
    */
   closedDialogs: ClosedExtensionDialog[];
+  /** The selected session's extension statuses and widgets; absent until its snapshot arrives. */
+  extensionUi: SessionExtensionUi | undefined;
+  /** The selected session's passing extension notices, oldest first. */
+  extensionToasts: ExtensionToast[];
   /** Thinking levels available for the selected session's current model. */
   availableThinkingLevels: readonly string[];
   sessionStatuses: Record<string, SessionStatus>;
@@ -154,6 +164,8 @@ export function initialAppState(): AppState {
     activity: undefined,
     pendingDialogs: [],
     closedDialogs: [],
+    extensionUi: undefined,
+    extensionToasts: [],
     availableThinkingLevels: [],
     sessionStatuses: {},
     sessionActivities: {},

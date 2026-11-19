@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { conversationActivityText } from "./ConversationLayout";
+import { conversationActivityText, goalTone } from "./ConversationLayout";
 import type { SessionActivity, SessionStatus } from "../api";
 
 const idle: SessionStatus = {
@@ -8,6 +8,14 @@ const idle: SessionStatus = {
   tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 };
 const activity: SessionActivity = { sessionId: "test", phase: "active", label: "Working", at: "2026-10-21T00:00:00Z" };
+
+describe("goal pill", () => {
+  it("colors pi-goal's status by what the goal needs", () => {
+    expect(goalTone("active 66h47m · automatic Unlimited")).toBe("active");
+    expect(goalTone("complete")).toBe("complete");
+    expect(goalTone("waiting")).toBe("attention");
+  });
+});
 
 describe("conversation activity", () => {
   it("keeps idle conversations quiet and prioritizes sending", () => {

@@ -4,7 +4,15 @@ export const conversationLayoutStyles = css`
   @layer pi-web-base {
     :host { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; min-height: 0; isolation: isolate; }
     :host([hidden]) { display: none; }
-    .transcript { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; min-width: 0; isolation: isolate; }
+    .transcript { position: relative; display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; min-width: 0; isolation: isolate; }
+    .goal { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 2; display: flex; align-items: center; gap: 8px; max-width: 80%; box-sizing: border-box; padding: 4px 14px; border: 1px solid var(--pi-border); border-radius: 999px; background: var(--pi-surface); box-shadow: 0 2px 10px rgb(0 0 0 / 18%); color: var(--pi-text); font: 12px var(--pi-font, system-ui, sans-serif); white-space: nowrap; overflow: hidden; pointer-events: none; }
+    .goal-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--pi-warning); }
+    .goal[data-tone="active"] .goal-dot { background: var(--pi-success); }
+    .goal[data-tone="complete"] .goal-dot { background: var(--pi-muted); }
+    .goal-label { color: var(--pi-muted); }
+    .goal-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+    .toasts { position: absolute; top: 44px; left: 50%; transform: translateX(-50%); z-index: 2; display: flex; flex-direction: column; align-items: center; gap: 6px; width: min(560px, calc(100% - 24px)); pointer-events: none; }
+    .toast { box-sizing: border-box; max-width: 100%; padding: 6px 12px; border: 1px solid var(--pi-border); border-radius: 8px; background: var(--pi-surface); box-shadow: 0 2px 10px rgb(0 0 0 / 18%); color: var(--pi-text); font: 12px/1.4 var(--pi-font, system-ui, sans-serif); overflow-wrap: anywhere; white-space: pre-wrap; max-height: 40vh; overflow: auto; pointer-events: auto; }
     ::slotted(chat-view) { flex: 1 1 auto; min-height: 0; min-width: 0; }
     .composer-boundary { position: relative; flex: 0 0 auto; min-width: 0; container-type: inline-size; }
     .chat-composer[hidden], .question-actions[hidden] { display: none; }

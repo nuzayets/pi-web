@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseSessionTranscriptSnapshot } from "./parsers";
+import { parseSessionStreamEvent, parseSessionTranscriptSnapshot } from "./parsers";
 
 function snapshot() {
   return {
@@ -25,6 +25,18 @@ describe("parseSessionTranscriptSnapshot", () => {
       ...wire,
       status: { ...wire.status, queuedMessages: [], recentlyActiveElsewhere: false },
     });
+  });
+
+  it("parses extension statuses and widgets when the server sends them", () => {
+    const extensionUi = {
+      statuses: { goal: "active" },
+      widgets: [{ key: "btw", lines: ["**answer**"], title: "btw", markdown: true, actions: [{ label: "×", title: "Close", command: "/btw-close" }] }],
+    };
+    expect(parseSessionTranscriptSnapshot({ ...snapshot(), extensionUi }).extensionUi).toEqual(extensionUi);
+    expect(parseSessionTranscriptSnapshot(snapshot())).not.toHaveProperty("extensionUi");
+    expect(() => parseSessionTranscriptSnapshot({ ...snapshot(), extensionUi: { statuses: { goal: 1 }, widgets: [] } })).toThrow();
+    expect(parseSessionStreamEvent({ type: "extension.ui", ui: extensionUi })).toEqual({ type: "extension.ui", ui: extensionUi });
+    expect(parseSessionStreamEvent({ type: "extension.toast", message: "Goal waiting" })).toEqual({ type: "extension.toast", message: "Goal waiting" });
   });
 
   it("accepts an empty initial snapshot", () => {

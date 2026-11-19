@@ -39,7 +39,7 @@ describe("PiSessionService MCP auth bridge", () => {
       await new Promise<void>((resolve) => { finish = resolve; });
       ui.notify("Pi final notice", "error");
       // A timer born in the command scope retains ALS ancestry after finish.
-      void new Promise<void>((resolve) => { background = resolve; }).then(() => { ui.notify("background after finish", "info"); });
+      void new Promise<void>((resolve) => { background = resolve; }).then(() => { ui.notify("background after finish", "warning"); });
     };
     const flow = await service.startMcpAuth(sessionRef("session-1"), "login");
     expect(flow.select?.message).toBe("Choose an MCP server");
