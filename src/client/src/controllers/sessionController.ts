@@ -265,7 +265,7 @@ export class SessionController {
     // that is still sending; the per-session entry is cleared by send()'s
     // finally block when the request settles.
     this.sessionConnectionOpen = false;
-    this.setState({ selectedSession: undefined, conversationSync: undefined, conversationRefreshedAt: undefined, messages: [], messagePageStart: 0, messagePageEnd: 0, messagePageTotal: 0, isLoadingEarlierMessages: false, status: undefined, activity: undefined, pendingDialogs: [], closedDialogs: [], extensionUi: undefined, extensionToasts: [], availableThinkingLevels: [], treeDialog: undefined });
+    this.setState({ selectedSession: undefined, conversationSync: undefined, conversationRefreshedAt: undefined, messages: [], messagePageStart: 0, messagePageEnd: 0, messagePageTotal: 0, isLoadingEarlierMessages: false, status: undefined, activity: undefined, pendingDialogs: [], closedDialogs: [], extensionUi: undefined, extensionToasts: [], openAsk: undefined, availableThinkingLevels: [], treeDialog: undefined });
   }
 
   deselectSession(options?: { forgetRememberedSelection?: boolean | undefined; updateUrl?: boolean | undefined }) {
@@ -405,6 +405,7 @@ export class SessionController {
       closedDialogs: [],
       extensionUi: undefined,
       extensionToasts: [],
+      openAsk: undefined,
       availableThinkingLevels: [],
     });
     if (this.selectedSessionLoadDeferred) {
@@ -421,7 +422,7 @@ export class SessionController {
         if (seq !== this.selectionSeq || this.getState().selectedSession?.id !== session.id || !navigationIsCurrent(options?.navigation)) return;
         this.browserErrors.clearRecovered(recoveryError);
         const history = this.transcripts.mergeHistory(transcriptKey, page);
-        this.setState({ ...history, isLoadingEarlierMessages: false, status: undefined, activity: undefined, pendingDialogs: [], closedDialogs: [], extensionUi: undefined, extensionToasts: [] });
+        this.setState({ ...history, isLoadingEarlierMessages: false, status: undefined, activity: undefined, pendingDialogs: [], closedDialogs: [], extensionUi: undefined, extensionToasts: [], openAsk: undefined });
         this.onSelectedSessionReady?.({ machineId, session });
         if (options?.updateUrl !== false) this.updateUrl();
         return;
@@ -769,6 +770,8 @@ export class SessionController {
     // identity and requires a fresh authoritative branch read.
     if (!this.isSelectedSessionIdentity(session.id, machineId)) return;
     this.clearPendingUpdates();
+    // The new branch's snapshot reports its own open question.
+    this.setState({ openAsk: undefined });
     // Only editable targets return editor text. Other history navigation keeps
     // the draft; refresh history either way, even if editor replacement fails.
     const editorReplacement = (async () => {
@@ -883,6 +886,7 @@ export class SessionController {
     if (session === undefined || !this.isSelectedSessionIdentity(session.id, machineId)) return;
     this.transcripts.discard(machineSessionKey(machineId, session.id));
     this.clearPendingUpdates();
+    this.setState({ openAsk: undefined });
     void this.refreshSelectedSession(session.id);
 
     // Retire the separately loaded picker rather than issuing /tree while the
@@ -1028,7 +1032,7 @@ export class SessionController {
         sessions: nextSessions,
         sessionStatuses: omitKeys(state.sessionStatuses, affectedIds),
         sessionActivities: omitKeys(state.sessionActivities, affectedIds),
-        ...(selectedAffected ? { status: undefined, activity: undefined, pendingDialogs: [], closedDialogs: [], extensionUi: undefined, extensionToasts: [] } : {}),
+        ...(selectedAffected ? { status: undefined, activity: undefined, pendingDialogs: [], closedDialogs: [], extensionUi: undefined, extensionToasts: [], openAsk: undefined } : {}),
       });
       const expected = this.navigationSelection();
 
@@ -1700,7 +1704,8 @@ export class SessionController {
         this.applyStatus(status);
         this.lastAppliedSelectedRefresh = { selectionSeq: target.selectionSeq, partialJson: selectedRefreshPartialJson(snapshot) };
       }
-      const { extensionUi } = snapshot;
+      const { extensionUi, openAsk } = snapshot;
+      if (openAsk?.askId !== this.getState().openAsk?.askId) this.setState({ openAsk });
       if (extensionUi !== undefined) {
         this.extensionUiSeq = { sessionId: target.session.id, seq: snapshot.seq };
         if (JSON.stringify(extensionUi) !== JSON.stringify(this.getState().extensionUi)) this.setState({ extensionUi });
@@ -1957,6 +1962,7 @@ export class SessionController {
       closedDialogs: [],
       extensionUi: undefined,
       extensionToasts: [],
+      openAsk: undefined,
       availableThinkingLevels: [],
       treeDialog: undefined,
       ...(activity === undefined ? {} : { sessionActivities: { ...state.sessionActivities, [session.id]: activity } }),

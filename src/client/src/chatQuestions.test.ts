@@ -66,3 +66,15 @@ it("projects every response, including a partial answer and skip, without stale 
   const lateReply: ChatLine = { role: "system", parts: [{ type: "askUserRecord", outcome: reply }] };
   expect(openTranscriptQuestion([question, { role: "tool", parts: [{ type: "askUserQuestion", ask: newer }] }, lateReply], tail)).toBe(newer);
 });
+
+it("falls back to the server's open question when it precedes the loaded messages", () => {
+  const later: ChatLine = { role: "user", parts: [{ type: "text", text: "Keep going" }] };
+  expect(openTranscriptQuestion([later], { ...tail, earlierAsk: ask })).toBe(ask);
+  const newer = { ...ask, askId: "ask-2" };
+  expect(openTranscriptQuestion([{ role: "tool", parts: [{ type: "askUserQuestion", ask: newer }] }], { ...tail, earlierAsk: ask })).toBe(newer);
+  const reply: ChatLine = { role: "system", parts: [{ type: "askUserRecord", outcome: {
+    ...ask, closedAt: "2026-07-20T10:05:00.000Z", reason: "cancelled", questions: [], answeredCount: 0, unansweredIds: ["q"], summary: "",
+  } }] };
+  expect(openTranscriptQuestion([later, reply], { ...tail, earlierAsk: ask })).toBeUndefined();
+  expect(openTranscriptQuestion([later], { ...tail, earlierAsk: ask, messageEnd: 1 })).toBeUndefined();
+});

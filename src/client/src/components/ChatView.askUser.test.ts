@@ -167,6 +167,20 @@ it("keeps standalone historical response records readable when the original requ
   expect(card.shadowRoot?.querySelector("input, textarea, button, select")).toBeNull();
 });
 
+it("shows a form for an open question older than the loaded messages until it is answered", async () => {
+  const view = await mountView([textMessage("user", "Keep going")]);
+  expect(view.shadowRoot?.querySelector("ask-user-card")).toBeNull();
+  view.earlierAsk = ask;
+  await view.updateComplete;
+  const card = await questionCard(view);
+  expect(card.ask).toEqual(ask);
+  expect(card.open).toBe(true);
+  expect(card.classList.contains("open-question-card")).toBe(true);
+  view.messages = [...view.messages, { role: "system", parts: [{ type: "askUserRecord", outcome }] }];
+  await view.updateComplete;
+  expect(view.shadowRoot?.querySelector("ask-user-card.open-question-card")).toBeNull();
+});
+
 describe("ChatView intervention requests", () => {
   it("shows a reloaded intervention request at the top level instead of collapsed activity", async () => {
     const view = await mountView(normalizeMessages([

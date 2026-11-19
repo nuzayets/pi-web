@@ -593,6 +593,7 @@ export function parseSessionTranscriptSnapshot(value: unknown): SessionTranscrip
     seq: requireNonNegativeSafeInteger(record, "seq"),
     partial: record["partial"],
     ...(record["extensionUi"] === undefined ? {} : { extensionUi: parseSessionExtensionUi(record["extensionUi"]) }),
+    ...(record["openAsk"] === undefined ? {} : { openAsk: parseAskUserRequest(record["openAsk"]) }),
   };
 }
 

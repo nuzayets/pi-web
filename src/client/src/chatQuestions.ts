@@ -6,6 +6,8 @@ export interface QuestionTailContext {
   messageEnd: number;
   messageTotal: number;
   writable: boolean;
+  /** The server's open question, for when it precedes the loaded messages. */
+  earlierAsk?: AskUserRequest | undefined;
 }
 
 /**
@@ -26,7 +28,8 @@ export function openTranscriptQuestion(messages: readonly ChatLine[], context: Q
       if (part?.type === "askUserQuestion") return answered.has(part.ask.askId) ? undefined : part.ask;
     }
   }
-  return undefined;
+  const earlier = context.earlierAsk;
+  return earlier === undefined || answered.has(earlier.askId) ? undefined : earlier;
 }
 
 /** Responses remain separate transcript facts; none is treated as stale. */

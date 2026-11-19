@@ -1,6 +1,6 @@
 import type { AuthProviderOption, CommandOption, CommandResult, ExtensionDialogAnswer, ExtensionDialogCloseReason, Machine, MachineHealth, MachineRuntime, OAuthFlowState, PendingExtensionDialog, PiWebStatusResponse, Project, QueuedSessionMessage, SessionActivity, SessionInfo, SessionModelCatalogEntry, SessionModelCatalogResponse, SessionStatus, SessionTreeSnapshot, TerminalCommandRun, Workspace, WorkspaceProviderResolution } from "./api";
 import type { ChatLine } from "./chatTypes";
-import type { SessionExtensionUi } from "../../shared/apiTypes";
+import type { AskUserRequest, SessionExtensionUi } from "../../shared/apiTypes";
 
 export interface ExtensionToast {
   id: number;
@@ -68,6 +68,8 @@ export interface AppState {
   extensionUi: SessionExtensionUi | undefined;
   /** The selected session's passing extension notices, oldest first. */
   extensionToasts: ExtensionToast[];
+  /** The selected session's unanswered question as of its latest snapshot, which may precede the loaded messages. */
+  openAsk: AskUserRequest | undefined;
   /** Thinking levels available for the selected session's current model. */
   availableThinkingLevels: readonly string[];
   sessionStatuses: Record<string, SessionStatus>;
@@ -165,6 +167,7 @@ export function initialAppState(): AppState {
     pendingDialogs: [],
     closedDialogs: [],
     extensionUi: undefined,
+    openAsk: undefined,
     extensionToasts: [],
     availableThinkingLevels: [],
     sessionStatuses: {},

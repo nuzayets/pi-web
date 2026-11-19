@@ -109,7 +109,7 @@ import { createAskUserToolDefinition } from "./askUserTool.js";
 import { createRequestHumanInterventionToolDefinition } from "./requestHumanInterventionTool.js";
 import { createArchiveSelfToolDefinition, type CheckSelfArchive } from "./archiveSelfTool.js";
 import { continuesConversation, requestsHumanIntervention, SESSION_INTERVENTION_CUSTOM_TYPE, sessionInterventionRequired } from "./sessionIntervention.js";
-import { createAskUserOutcome, renderAskUserAnswersText, resolveAskUserRequest } from "./askUserDomain.js";
+import { createAskUserOutcome, openAskUserRequest, renderAskUserAnswersText, resolveAskUserRequest } from "./askUserDomain.js";
 import { PendingExtensionDialogStore, type ExtensionDialogCancelReason } from "./pendingExtensionDialogStore.js";
 import { ExtensionDialogWaiters, effectiveExtensionDialogTimeoutMs, extensionDialogCancelValue } from "./extensionDialogWaiters.js";
 import { DEFAULT_EXTENSION_DIALOGS_TIMEOUT_MS } from "../../config.js";
@@ -2969,12 +2969,14 @@ export class PiSessionService implements SessionRouteService {
     const echoes = (this.pendingPromptEchoes.get(session) ?? []).filter((echo) => echo.userIndex >= userCount);
     messages.push(...echoes.map((echo) => echo.message));
     const messagePage = pageMessagesAtSafeBoundary(messages, page);
+    const openAsk = openAskUserRequest(messages);
     return {
       page: { ...messagePage, messages: messagePage.messages.map((message) => this.browserTranscriptMessage(session, message)) },
       status: this.statusFromSession(session, transcriptMessageCount(branch) + echoes.length),
       seq: this.events.currentSeq(session.sessionId),
       partial: this.publishedAssistantPartials.get(session) ?? null,
       extensionUi: this.extensionUi.snapshot(session.sessionId),
+      ...(openAsk === undefined ? {} : { openAsk }),
     };
   }
 

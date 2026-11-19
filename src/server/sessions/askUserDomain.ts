@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  ASK_USER_ANSWERS_CUSTOM_TYPE,
   ASK_USER_COMMENT_MAX_LENGTH,
   ASK_USER_ID_MAX_LENGTH,
   ASK_USER_OPTION_LIMIT,
@@ -45,23 +46,54 @@ export function resolveAskUserRequest(branch: readonly unknown[], askId: string)
   requireId(askId, "askId");
   for (const entry of [...branch].reverse()) {
     if (!isRecord(entry) || entry["type"] !== "message") continue;
-    const message = entry["message"];
-    if (!isRecord(message) || message["role"] !== "toolResult" || message["toolName"] !== "ask_user" || message["isError"] !== false) continue;
-    const details = message["details"];
-    const ask = isRecord(details) ? details["ask"] : undefined;
+    const ask = storedAsk(entry["message"]);
     if (!isRecord(ask) || ask["askId"] !== askId) continue;
     try {
-      return {
-        askId: requireId(ask["askId"], "askId"),
-        askedAt: requireTimestamp(ask["askedAt"]),
-        questions: validateQuestions(ask["questions"]),
-      };
+      return parseStoredAsk(ask);
     } catch (error: unknown) {
       if (!(error instanceof AskUserValidationError)) throw error;
       throw new AskUserValidationError(`Malformed ask_user request ${askId}: ${error.message}`);
     }
   }
   throw new AskUserValidationError(`Unknown ask ID ${askId} on the active session branch`);
+}
+
+/** The latest question in transcript messages, unless an answer, skip or newer ask_user call closed it. */
+export function openAskUserRequest(messages: readonly unknown[]): AskUserRequest | undefined {
+  const closed = new Set<unknown>();
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!isRecord(message)) continue;
+    const details = message["details"];
+    if (message["role"] === "custom" && message["customType"] === ASK_USER_ANSWERS_CUSTOM_TYPE && isRecord(details)) closed.add(details["askId"]);
+    if (message["role"] === "toolResult" && message["toolName"] === "ask_user" && isRecord(details) && isRecord(details["superseded"])) {
+      closed.add(details["superseded"]["askId"]);
+    }
+    const ask = storedAsk(message);
+    if (!isRecord(ask)) continue;
+    if (closed.has(ask["askId"])) return undefined;
+    try {
+      return parseStoredAsk(ask);
+    } catch (error: unknown) {
+      if (error instanceof AskUserValidationError) return undefined;
+      throw error;
+    }
+  }
+  return undefined;
+}
+
+function storedAsk(message: unknown): unknown {
+  if (!isRecord(message) || message["role"] !== "toolResult" || message["toolName"] !== "ask_user" || message["isError"] !== false) return undefined;
+  const details = message["details"];
+  return isRecord(details) ? details["ask"] : undefined;
+}
+
+function parseStoredAsk(ask: Record<string, unknown>): AskUserRequest {
+  return {
+    askId: requireId(ask["askId"], "askId"),
+    askedAt: requireTimestamp(ask["askedAt"]),
+    questions: validateQuestions(ask["questions"]),
+  };
 }
 
 /** A submission or skip is a new transcript outcome, never an open/close transition. */

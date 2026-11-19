@@ -1471,6 +1471,8 @@ export interface SessionTranscriptSnapshot extends SessionStreamSnapshot {
   status: SessionStatus;
   /** Absent from servers without extension UI support. */
   extensionUi?: SessionExtensionUi;
+  /** The unanswered question, even when it precedes the page. */
+  openAsk?: AskUserRequest;
 }
 
 /** A widget button runs one of the session's slash commands. */
