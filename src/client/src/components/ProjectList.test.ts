@@ -231,6 +231,64 @@ describe("project move actions", () => {
   });
 });
 
+describe("active project ordering", () => {
+  it("lifts active and unread projects in saved order and restores them when idle", async () => {
+    const projects = ["a", "b", "c", "d", "e"].map(project);
+    const list = await mountProjectList(projects, undefined);
+    const rowB = rowFor(list, "b");
+    expect(displayedIds(list)).toEqual(["a", "b", "c", "d", "e"]);
+
+    list.statusSnapshot = machineStatusSnapshot({ projects: { d: { "core:unread": true }, b: { "core:terminal": true }, e: { "core:intervention-required": true } } });
+    await list.updateComplete;
+    expect(displayedIds(list)).toEqual(["b", "d", "e", "a", "c"]);
+    expect(rowFor(list, "b")).toBe(rowB);
+
+    list.statusSnapshot = machineStatusSnapshot({ revision: 2, projects: { d: { "core:working": true } } });
+    await list.updateComplete;
+    expect(displayedIds(list)).toEqual(["d", "a", "b", "c", "e"]);
+
+    list.statusSnapshot = machineStatusSnapshot({ revision: 3 });
+    await list.updateComplete;
+    expect(displayedIds(list)).toEqual(["a", "b", "c", "d", "e"]);
+  });
+
+  it.each([
+    ["a", "Move up", "c", "before"],
+    ["a", "Move down", "b", "after"],
+    ["c", "Move down", "a", "after"],
+  ] as const)("moves %s with %s relative to the visible neighbor", async (moved, label, neighbor, position) => {
+    const projects = ["a", "b", "c"].map(project);
+    const list = await mountProjectList(projects, machineStatusSnapshot({ projects: { c: { "core:working": true } } }));
+    const onMove = vi.fn();
+    const onReorder = vi.fn();
+    list.onMove = onMove;
+    list.onReorder = onReorder;
+    openMenu(list, moved);
+    await list.updateComplete;
+    moveButton(list, label).click();
+    expect(onReorder).toHaveBeenCalledExactlyOnceWith(project(moved), project(neighbor), position);
+    expect(onMove).not.toHaveBeenCalled();
+  });
+
+  it("drops relative to the visible neighbor while a project is lifted", async () => {
+    const projects = ["a", "b", "c"].map(project);
+    const list = await mountProjectList(projects, machineStatusSnapshot({ projects: { c: { "core:unread": true } } }));
+    const onReorder = vi.fn();
+    list.onReorder = onReorder;
+    await stubRowRects(list);
+
+    pointer(rowFor(list, "b"), "pointerdown", 120);
+    pointer(rowFor(list, "b"), "pointermove", 60);
+    pointer(rowFor(list, "b"), "pointerup", 60);
+
+    expect(onReorder).toHaveBeenCalledExactlyOnceWith(projects[1], projects[2], "after");
+  });
+});
+
+function displayedIds(list: ProjectList): string[] {
+  return [...(list.shadowRoot?.querySelectorAll<HTMLElement>("[data-project-id]") ?? [])].map((row) => row.dataset["projectId"] ?? "");
+}
+
 function openMenu(list: ProjectList, name: string): void {
   const toggle = rowFor(list, name).querySelector<HTMLButtonElement>(".action-menu-toggle");
   if (toggle === null) throw new Error(`Expected a menu toggle for ${name}`);
