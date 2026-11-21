@@ -22,6 +22,16 @@ interface RootTrustState extends TrustMenuState {
   workspaceId?: string;
 }
 
+/** Lifts projects with activity or unread sessions above the rest, keeping the given order within each group. */
+function projectDisplayOrder(projects: Project[], snapshot: MachineStatusSnapshot | undefined): Project[] {
+  const lifted = (project: Project) => {
+    const flags = snapshot?.projects[project.id];
+    return statusActivityKind(flags) !== undefined || hasStatusUnread(flags);
+  };
+  const active = projects.filter(lifted);
+  return active.length === 0 ? projects : [...active, ...projects.filter((project) => !lifted(project))];
+}
+
 @customElement("project-list")
 export class ProjectList extends LitElement implements KeyboardNavigableSection {
   constructor() {
@@ -58,8 +68,9 @@ export class ProjectList extends LitElement implements KeyboardNavigableSection 
   private readonly detailCopy = new DetailCopyController(this);
   private focusedControl: HTMLElement | undefined;
   private focusAfterReorder: HTMLElement | undefined;
+  private displayedProjects: Project[] = [];
   private readonly reorder: ListReorderController<Project> = new ListReorderController<Project>(this, {
-    items: () => this.projects,
+    items: () => this.displayedProjects,
     enabled: () => this.onReorder !== undefined && !this.collapsed,
     onDrop: (project, neighbor, position) => { this.onReorder?.(project, neighbor, position); },
     onStart: () => { this.openMenuProjectId = undefined; },
@@ -69,15 +80,17 @@ export class ProjectList extends LitElement implements KeyboardNavigableSection 
   private reorderMembership = "";
 
   protected override willUpdate(changed: PropertyValues<this>): void {
-    if (changed.has("projects")) this.focusAfterReorder = this.focusedControl;
-    const membership = JSON.stringify(this.projects.map(({ id }) => id));
+    const previousOrder = this.reorderMembership;
+    this.displayedProjects = projectDisplayOrder(this.projects, this.statusSnapshot);
+    const membership = JSON.stringify(this.displayedProjects.map(({ id }) => id));
+    if (changed.has("projects") || membership !== previousOrder) this.focusAfterReorder = this.focusedControl;
     if (membership !== this.reorderMembership || changed.has("machineId") || this.collapsed || this.onReorder === undefined) this.reorder.cancel();
     this.reorderMembership = membership;
     if (changed.has("machineId")) this.openMenuProjectId = undefined;
   }
 
   protected override updated(changed: PropertyValues<this>): void {
-    if (changed.has("projects") && this.focusAfterReorder?.isConnected === true) {
+    if (this.focusAfterReorder?.isConnected === true) {
       const control = this.focusAfterReorder;
       const target = control instanceof HTMLButtonElement && control.disabled
         ? control.closest(".action-menu-panel")?.querySelector<HTMLElement>("button[data-move]:not(:disabled)")
@@ -101,7 +114,7 @@ export class ProjectList extends LitElement implements KeyboardNavigableSection 
         <h2 class="ui-toolbar">${this.renderHeading()}</h2>
         ${this.collapsed ? null : html`
           <div class="list-body ui-nav-list" aria-busy=${String(this.selectionLoading)}>
-            ${repeat(this.projects, (project) => project.id, (project, index) => {
+            ${repeat(this.displayedProjects, (project) => project.id, (project, index) => {
               const flags = this.statusSnapshot?.projects[project.id];
               const kind = statusActivityKind(flags);
               const unread = hasStatusUnread(flags);
@@ -140,8 +153,8 @@ export class ProjectList extends LitElement implements KeyboardNavigableSection 
                       <div popover="auto" class="action-menu-panel ui-menu ui-menu--grouped ui-nav-row-menu ui-popup-panel" data-ui-context="project-actions" id=${`project-menu-${encodeURIComponent(project.id)}`} @click=${(event: MouseEvent) => { event.stopPropagation(); }}>
                         <div class="ui-menu-group" data-menu-group="actions">
                           ${this.onMove === undefined ? null : html`
-                            <button class="ui-button ui-menu-item" data-move ?disabled=${index === 0} @click=${() => { this.onMove?.(project, -1); }}>${messages.t("moveUp")}</button>
-                            <button class="ui-button ui-menu-item" data-move ?disabled=${index === this.projects.length - 1} @click=${() => { this.onMove?.(project, 1); }}>${messages.t("moveDown")}</button>
+                            <button class="ui-button ui-menu-item" data-move ?disabled=${index === 0} @click=${() => { this.move(project, index, -1); }}>${messages.t("moveUp")}</button>
+                            <button class="ui-button ui-menu-item" data-move ?disabled=${index === this.displayedProjects.length - 1} @click=${() => { this.move(project, index, 1); }}>${messages.t("moveDown")}</button>
                           `}
                           <button class="ui-button ui-menu-item" title=${messages.t("closeProject")} @click=${() => { this.close(project); }}>${messages.t("closeProject")}</button>
                         </div>
@@ -165,6 +178,14 @@ export class ProjectList extends LitElement implements KeyboardNavigableSection 
         `}
       </section>
     `;
+  }
+
+  /** Moves relative to the visible neighbor, which differs from the saved neighbor while projects are lifted. */
+  private move(project: Project, index: number, direction: -1 | 1): void {
+    const neighbor = this.displayedProjects[index + direction];
+    if (neighbor === undefined) return;
+    if (this.onReorder === undefined) this.onMove?.(project, direction);
+    else this.onReorder(project, neighbor, direction < 0 ? "before" : "after");
   }
 
   private handleProjectKeydown(event: KeyboardEvent, project: Project): void {
