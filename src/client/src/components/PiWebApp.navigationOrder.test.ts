@@ -135,8 +135,11 @@ it.each(["handleRealtimeEvent", "handleMachineActivityEvent"])("refreshes explic
   load.mockClear().mockResolvedValue({ ids: ["external-pin"], revision: 2 });
   const handle: unknown = Reflect.get(app, handler);
   if (typeof handle !== "function") throw new Error("Missing event handler");
-  Reflect.apply(handle, app, ["remote", { type: "session-pins.changed", projectId: scope.projectId, workspaceId: scope.workspaceId, revision: 2 }]);
+  const changed = { type: "session-pins.changed", projectId: scope.projectId, workspaceId: scope.workspaceId, revision: 2 };
+  Reflect.apply(handle, app, ["remote", changed]);
   // Join the same serialized queue to observe the event-triggered refresh.
+  await controller.mutate(scope, (ids) => ids);
+  Reflect.apply(handle, app, ["remote", changed]);
   await controller.mutate(scope, (ids) => ids);
   expect(load).toHaveBeenCalledExactlyOnceWith(scope);
   expect(controller.ids(scope)).toEqual(["external-pin"]);

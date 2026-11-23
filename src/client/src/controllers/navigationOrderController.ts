@@ -67,6 +67,20 @@ export class NavigationOrderController {
     return this.enqueue(scope, async (state) => { state.snapshot = await this.port.load(scope); });
   }
 
+  /**
+   * Apply a daemon pin-change broadcast. A scope this browser has not used is
+   * read when displayed. A held revision is already current, including this
+   * browser's own acknowledged save: daemon pin revisions increase by one per
+   * write and persist, so only an equal revision is skipped.
+   */
+  refreshChangedSessionPins(scope: Extract<NavigationOrderScope, { kind: "sessionPins" }>, revision: number): Promise<void> {
+    if (!this.states.has(scopeKey(scope))) return Promise.resolve();
+    scope = { ...scope };
+    return this.enqueue(scope, async (state) => {
+      if (state.snapshot?.revision !== revision) state.snapshot = await this.port.load(scope);
+    });
+  }
+
   /** Recover missed pin broadcasts for every visited workspace on this machine. */
   async refreshSessionPins(machineId: string): Promise<void> {
     await Promise.all([...this.states.values()]

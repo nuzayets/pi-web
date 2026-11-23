@@ -2120,7 +2120,7 @@ export class PiWebApp extends LitElement {
 
   private handleMachineActivityEvent(machineId: string, event: BrowserRealtimeEvent): void {
     if (event.type === "session-pins.changed") {
-      void this.navigationOrder.load({ kind: "sessionPins", machineId, projectId: event.projectId, workspaceId: event.workspaceId }).catch(() => undefined);
+      void this.navigationOrder.refreshChangedSessionPins({ kind: "sessionPins", machineId, projectId: event.projectId, workspaceId: event.workspaceId }, event.revision).catch(() => undefined);
     } else if (event.type === "sessions.unread") this.sessionUnread.applyEvent(machineId, event);
     else if (event.type === "machine.status") this.machineStatus.apply(machineId, event.status);
   }

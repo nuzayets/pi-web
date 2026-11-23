@@ -104,6 +104,48 @@ describe("NavigationOrderController", () => {
     expect(controller.ids(projects)).toEqual([]);
   });
 
+  it("reloads changed pins only for loaded scopes that do not hold the announced revision", async () => {
+    const load = vi.fn<NavigationOrderPort["load"]>().mockResolvedValue({ ids: ["a"], revision: 1 });
+    const save = vi.fn<NavigationOrderPort["save"]>((_scope, ids, revision) => Promise.resolve({ ids: [...ids], revision: revision + 1 }));
+    const controller = new NavigationOrderController({ load, save });
+    const scope = { kind: "sessionPins", machineId: "local", projectId: "p", workspaceId: "w" } as const;
+    const hidden = { ...scope, workspaceId: "hidden" };
+
+    // A scope this browser has not used is read when it is displayed.
+    await controller.refreshChangedSessionPins(hidden, 4);
+    expect(load).not.toHaveBeenCalled();
+
+    await controller.ensure(scope);
+    await controller.mutate(scope, (ids) => [...ids, "b"]);
+    // The broadcast of this browser's own save announces the revision it returned.
+    await controller.refreshChangedSessionPins(scope, 2);
+    expect(load).toHaveBeenCalledOnce();
+    expect(controller.ids(scope)).toEqual(["a", "b"]);
+
+    // Another writer's revision, or a lower one after a daemon store reset, reloads.
+    load.mockResolvedValueOnce({ ids: ["external"], revision: 3 }).mockResolvedValueOnce({ ids: ["reset"], revision: 1 });
+    await controller.refreshChangedSessionPins(scope, 3);
+    await controller.refreshChangedSessionPins(scope, 1);
+    expect(load).toHaveBeenCalledTimes(3);
+    expect(controller.ids(scope)).toEqual(["reset"]);
+  });
+
+  it.each([
+    ["returned the announced revision", 5, 1],
+    ["was read before the announced write", 4, 2],
+  ])("applies a change announced during the first load once that load %s", async (_case, firstRevision, loads) => {
+    const first = deferred<NavigationOrderSnapshot>();
+    const load = vi.fn<NavigationOrderPort["load"]>().mockReturnValueOnce(first.promise).mockResolvedValue({ ids: ["changed"], revision: 5 });
+    const controller = new NavigationOrderController({ load, save: vi.fn() });
+    const scope = { kind: "sessionPins", machineId: "local", projectId: "p", workspaceId: "w" } as const;
+    const ensured = controller.ensure(scope);
+    const changed = controller.refreshChangedSessionPins(scope, 5);
+    first.resolve({ ids: firstRevision === 5 ? ["changed"] : ["before"], revision: firstRevision });
+    await Promise.all([ensured, changed]);
+    expect(load).toHaveBeenCalledTimes(loads);
+    expect(controller.ids(scope)).toEqual(["changed"]);
+  });
+
   it("serializes explicit refresh behind a save and distinguishes workspace scopes", async () => {
     const saving = deferred<NavigationOrderSnapshot>();
     const load = vi.fn().mockResolvedValue({ ids: ["a"], revision: 0 });
