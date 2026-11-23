@@ -181,7 +181,9 @@ describe("browser localization boundary", () => {
   it("keeps development query overrides out of inherited defaults and saved user changes", async () => {
     const service = new LocalizationService({ development: true });
     const dispose = await initializeLocalization(service, { localStorage, document, navigator,
-      location: { search: "?pseudoLocale=ar-XB" } }, true, { language: "fr", formatLocale: "de-DE" });
+      location: { search: "?pseudoLocale=ar-XB" } }, true);
+    // The app's gateway config read applies defaults after startup.
+    await configureLocalizationPolicy({ effectiveConfig: { defaultLocalization: { language: "fr", formatLocale: "de-DE" } } }, service);
     expect(service.language).toBe("ar-XB");
     expect(localStorage.getItem("pi-web-localization")).toBeNull();
     await service.setPreferences({ ...service.preferences, hourCycle: "h12" });

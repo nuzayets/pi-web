@@ -1476,6 +1476,34 @@ it("applies the quiet-mode gateway setting to the rendered transcript", async ()
   expect(chat()?.quietMode).toBe(true);
 });
 
+// main.ts reads no config; startup gateway localization defaults come from this read.
+it("keeps browser localization after a failed app config read and applies gateway policy on refresh", async () => {
+  const app = await mountApp({});
+  const browserDefaults = localization.preferenceDefaults;
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  const config = vi.spyOn(configApi, "config")
+    .mockRejectedValueOnce(new Error("gateway unavailable"))
+    .mockResolvedValue({
+      ...configResponse({ defaultLocalization: { formatLocale: "de-DE" } }),
+      enforcedSettings: { "/defaultLocalization/formatLocale": "FORMAT_ENV" },
+    });
+  const loadConfig: unknown = Reflect.get(app, "loadClientConfig");
+  if (typeof loadConfig !== "function") throw new Error("Expected loadClientConfig");
+  try {
+    await Reflect.apply(loadConfig, app, []);
+    expect(warn).toHaveBeenCalledOnce();
+    expect(localization.preferenceDefaults).toEqual(browserDefaults);
+    expect(localization.preferenceSettingPolicy("formatLocale").locked).toBe(false);
+
+    await Reflect.apply(loadConfig, app, []);
+    expect(config).toHaveBeenCalledTimes(2);
+    expect(localization.preferenceDefaults.formatLocale).toBe("de-DE");
+    expect(localization.preferenceSettingPolicy("formatLocale")).toMatchObject({ locked: true, enforcedBy: "FORMAT_ENV" });
+  } finally {
+    await localization.setPreferenceDefaults(browserDefaults, {});
+  }
+});
+
 function namedButton(root: ParentNode | null | undefined, name: string): HTMLButtonElement {
   const button = [...root?.querySelectorAll<HTMLButtonElement>("button") ?? []]
     .find((candidate) => (candidate.getAttribute("aria-label") ?? candidate.textContent.trim()) === name);

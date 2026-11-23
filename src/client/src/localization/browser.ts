@@ -56,7 +56,6 @@ export async function initializeLocalization(
   configuredPolicy: LocalizationPolicy | Promise<LocalizationPolicy> = {},
 ): Promise<() => void> {
   const defaults = browserLocalizationPreferences(environment.navigator);
-  let inherited = defaults;
   let overrides: Partial<LocalizationPreferences> = {};
   try {
     const stored = environment.localStorage.getItem(STORAGE_KEY);
@@ -88,7 +87,8 @@ export async function initializeLocalization(
     if (revision === previousRevision) return;
     previousRevision = revision;
     const current = service.preferenceOverrides;
-    const language = current.language === "en-XA" || current.language === "ar-XB" ? savedLanguage ?? inherited.language : current.language;
+    // Gateway defaults can arrive after startup through configureLocalizationPolicy.
+    const language = current.language === "en-XA" || current.language === "ar-XB" ? savedLanguage ?? service.preferenceDefaults.language : current.language;
     const stored = { ...current, ...(language === undefined ? {} : { language }) };
     try {
       environment.localStorage.setItem(STORAGE_KEY, JSON.stringify(stored));
@@ -100,7 +100,6 @@ export async function initializeLocalization(
     const [configured, policy] = await Promise.all([configuredDefaults, configuredPolicy]);
     // Defaults can arrive after a user edit. Enforcement hides, but never replaces, that edit.
     void configureLocalizationDefaults(configured ?? {}, policy, service);
-    inherited = service.preferenceDefaults;
   } catch (cause) {
     unsubscribe();
     throw cause;
