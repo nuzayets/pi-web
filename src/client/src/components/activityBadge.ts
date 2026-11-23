@@ -55,12 +55,13 @@ export function statusActivityKind(flags: StatusFlags | undefined): ActivityIndi
   return statusWorkKind(flags);
 }
 
-/** Work remains independent of attention flags, including rolled-up intervention. */
+/** Work remains independent of attention flags, including rolled-up intervention and Goal waiting. */
 export function statusWorkKind(flags: StatusFlags | undefined): "session" | "terminal" | undefined {
   if (flags === undefined) return undefined;
   if (flags[CORE_STATUS_FLAGS.working] === true) return "session";
   if (flags[CORE_STATUS_FLAGS.terminal] === true) return "terminal";
-  const hasOtherFlag = Object.entries(flags).some(([flagId, isSet]) => isSet && flagId !== CORE_STATUS_FLAGS.unread && flagId !== CORE_STATUS_FLAGS.interventionRequired);
+  const hasOtherFlag = Object.entries(flags).some(([flagId, isSet]) => isSet && flagId !== CORE_STATUS_FLAGS.unread
+    && flagId !== CORE_STATUS_FLAGS.interventionRequired && flagId !== CORE_STATUS_FLAGS.goalWaiting);
   return hasOtherFlag ? "session" : undefined;
 }
 

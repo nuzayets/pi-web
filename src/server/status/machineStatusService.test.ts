@@ -7,6 +7,7 @@ const WORKING = CORE_STATUS_FLAGS.working;
 const TERMINAL = CORE_STATUS_FLAGS.terminal;
 const UNREAD = CORE_STATUS_FLAGS.unread;
 const INTERVENTION = CORE_STATUS_FLAGS.interventionRequired;
+const GOAL_WAITING = CORE_STATUS_FLAGS.goalWaiting;
 
 describe("MachineStatusService", () => {
   it("lights the project and workspace of an active session in a project the browser never opened", async () => {
@@ -78,6 +79,32 @@ describe("MachineStatusService", () => {
     expect(service.snapshot().machine).toEqual(remaining);
     expect(service.snapshot().projects).toEqual({ p1: remaining });
     expect(service.snapshot().workspaces).toEqual({ w1: remaining });
+  });
+
+  it("publishes Goal waiting only inside registered workspaces, without implying work, and clears it in the next snapshot", async () => {
+    // A Pi CLI session outside every workspace may hold a saved wait too.
+    const goalWaitingSessions = [{ sessionId: "waiting", cwd: "/repo" }, { sessionId: "cli", cwd: "/scratch" }];
+    const { service, published } = statusService({
+      goalWaitingSessions,
+      interventionSessions: [{ sessionId: "cli", cwd: "/scratch" }],
+      topology: { "/repo": { projectId: "p1", workspaceId: "w1" } },
+    });
+
+    await service.refresh();
+    expect(service.snapshot()).toMatchObject({
+      sessions: { waiting: { [GOAL_WAITING]: true }, cli: { [INTERVENTION]: true } },
+      projects: { p1: { [GOAL_WAITING]: true } },
+      workspaces: { w1: { [GOAL_WAITING]: true } },
+    });
+    expect(service.snapshot().sessions?.["cli"]).toEqual({ [INTERVENTION]: true });
+    expect(service.snapshot().unattributed).toEqual({ [INTERVENTION]: true });
+    expect(service.snapshot().machine).toEqual({ [GOAL_WAITING]: true, [INTERVENTION]: true });
+
+    goalWaitingSessions.length = 0;
+    await service.refresh();
+    expect(service.snapshot().sessions).toEqual({ cli: { [INTERVENTION]: true } });
+    expect(service.snapshot().machine).toEqual({ [INTERVENTION]: true });
+    expect(published).toHaveLength(2);
   });
 
   it("lights the project of an unread session completion", async () => {
@@ -269,6 +296,7 @@ interface StatusServiceScenario {
   sessions?: readonly { sessionId: string; cwd: string }[];
   unread?: readonly string[];
   interventionSessions?: readonly { sessionId: string; cwd: string }[];
+  goalWaitingSessions?: readonly { sessionId: string; cwd: string }[];
   topology?: Record<string, CwdAttribution>;
 }
 
@@ -298,6 +326,7 @@ function statusService(scenario: StatusServiceScenario = {}) {
         workspaces: [...activity],
         sessions: [...(scenario.sessions ?? [])],
         ...(scenario.interventionSessions === undefined ? {} : { interventionSessions: [...scenario.interventionSessions] }),
+        ...(scenario.goalWaitingSessions === undefined ? {} : { goalWaitingSessions: [...scenario.goalWaitingSessions] }),
       }),
     },
     unread: {

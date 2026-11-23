@@ -64,6 +64,11 @@ export const CORE_STATUS_FLAGS = {
   unread: "core:unread",
   /** A session in the subtree requires user intervention, independently of work. */
   interventionRequired: "core:intervention-required",
+  /**
+   * A session in the subtree has a waiting active Pi Goal, independently of
+   * work. Only sessions inside registered workspaces set it.
+   */
+  goalWaiting: "core:goal-waiting",
 } as const;
 
 /**

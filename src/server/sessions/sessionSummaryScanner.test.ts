@@ -194,6 +194,47 @@ describe("session summary scanner intervention state", () => {
   });
 });
 
+describe("session summary scanner Goal waiting state", () => {
+  const activeGoal = { id: "goal-1", text: "Ship the release", status: "active", startedAt: 1, updatedAt: 1, iteration: 0, tokensUsed: 0, timeUsedSeconds: 0, baselineTokens: 0 };
+  const goalStateLine = (data: unknown) => JSON.stringify({ type: "custom", customType: "goal-state", data, id: nextEntryId(), parentId: "root" });
+  const waitingGoal = { ...activeGoal, waiting: { reason: "Waiting for CI", resumeAt: 1_900_000_000_000 } };
+
+  it("lists the latest Goal state in file order and clears the wait after a later replacement", async () => {
+    const path = await writeSession("goal-wait.jsonl", [
+      headerLine({ id: "goal-wait", cwd: WORKSPACE }),
+      goalStateLine({ goal: activeGoal }),
+      goalStateLine({ goal: waitingGoal }),
+      messageLine({ role: "user", content: textContent("first") }),
+    ]);
+    const scanner = new SessionSummaryScanner({ chunkBytes: 23 });
+    for (let pass = 0; pass < 2; pass++) {
+      expect(await scanner.scanSessionSummariesInDir(sessionDir)).toMatchObject([{ id: "goal-wait", goalWaiting: true }]);
+    }
+
+    // Waking, pausing, and clearing each persist a replacement without a wait.
+    for (const data of [{ goal: activeGoal }, { goal: { ...waitingGoal, status: "paused" } }, { goal: null }]) {
+      await appendFile(path, `${goalStateLine({ goal: waitingGoal })}\n${goalStateLine(data)}\n`);
+      const summaries = await scanner.scanSessionSummariesInDir(sessionDir);
+      expect(summaries).toHaveLength(1);
+      expect(summaries[0]?.goalWaiting).toBeUndefined();
+    }
+  });
+
+  it("does not report a wait that pi-goal would not restore", async () => {
+    await writeSession("goal-wait-unrestored.jsonl", [
+      headerLine({ id: "goal-wait-unrestored", cwd: WORKSPACE }),
+      goalStateLine({ goal: waitingGoal, queue: [] }),
+    ]);
+    await writeSession("goal-wait-empty-reason.jsonl", [
+      headerLine({ id: "goal-wait-empty-reason", cwd: WORKSPACE }),
+      goalStateLine({ goal: { ...activeGoal, waiting: { reason: "  " } } }),
+    ]);
+    const summaries = await new SessionSummaryScanner().scanSessionSummariesInDir(sessionDir);
+    expect(summaries).toHaveLength(2);
+    expect(summaries.map((summary) => summary.goalWaiting)).toEqual([undefined, undefined]);
+  });
+});
+
 describe("session summary scanner name handling", () => {
   it("keeps the latest non-empty session_info name", async () => {
     const path = await writeSession("renamed.jsonl", [

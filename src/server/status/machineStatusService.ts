@@ -14,12 +14,13 @@ export interface ActiveCwdActivity {
   hasTerminalActivity: boolean;
 }
 
-/** Working activity and independent intervention state, filtered by the recorder. */
+/** Working activity and independent intervention and Goal waiting state, filtered by the recorder. */
 interface MachineStatusActivitySource {
   snapshot(): {
     workspaces: readonly ActiveCwdActivity[];
     sessions: readonly { sessionId: string; cwd: string }[];
     interventionSessions?: readonly { sessionId: string; cwd: string }[];
+    goalWaitingSessions?: readonly { sessionId: string; cwd: string }[];
   };
 }
 
@@ -142,6 +143,7 @@ export class MachineStatusService {
     const activity = this.dependencies.activity.snapshot();
     const unread = this.dependencies.unread.catalogSnapshot();
     const interventionSessions = activity.interventionSessions ?? [];
+    const goalWaitingSessions = activity.goalWaitingSessions ?? [];
     const flagsByCwd = this.flagsByCwd(activity.workspaces, unread.sessions, interventionSessions);
     const sessions = new FlagAccumulator();
     for (const session of activity.sessions) {
@@ -153,7 +155,14 @@ export class MachineStatusService {
     for (const session of interventionSessions) {
       sessions.add(session.sessionId, { [CORE_STATUS_FLAGS.interventionRequired]: true });
     }
-    const attributions = await this.dependencies.attribution.attribute(flagsByCwd.keys());
+    const attributions = await this.dependencies.attribution.attribute([...flagsByCwd.keys(), ...goalWaitingSessions.map((session) => session.cwd)]);
+    // Saved Goal waits can come from any Pi session on the machine. Report only those
+    // inside a registered workspace, never in the unattributed bucket.
+    for (const session of goalWaitingSessions) {
+      if (!attributions.has(session.cwd)) continue;
+      sessions.add(session.sessionId, { [CORE_STATUS_FLAGS.goalWaiting]: true });
+      flagsByCwd.set(session.cwd, { ...flagsByCwd.get(session.cwd), [CORE_STATUS_FLAGS.goalWaiting]: true });
+    }
 
     const projects = new FlagAccumulator();
     const workspaces = new FlagAccumulator();

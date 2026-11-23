@@ -699,6 +699,11 @@ export interface SessionInfo extends SessionRef {
   path: string;
   /** Session yielded for human input; any new agent run clears this state. */
   interventionRequired?: boolean;
+  /**
+   * The session's latest saved pi-goal state is an active Goal that is waiting.
+   * Cold rows carry only `true`; absent means not waiting or an older daemon.
+   */
+  goalWaiting?: boolean;
   /** Only true for positively verified tracked agent subsessions; absent otherwise. */
   agentSubsession?: boolean;
   /** True when the server has verified a backing session file exists; false when known transient. */
@@ -1273,6 +1278,8 @@ export interface SessionStatus {
   sessionId: string;
   /** Live value, including false; absent on older daemons. */
   interventionRequired?: boolean;
+  /** Live pi-goal waiting state, including false; absent on older daemons. */
+  goalWaiting?: boolean;
   /** True when the server has verified a backing session file exists; false when known transient. */
   persisted?: boolean;
   /**

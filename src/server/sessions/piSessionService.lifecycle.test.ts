@@ -1518,7 +1518,7 @@ describe("PiSessionService lifecycle, listing, and reload", () => {
         open: () => fakeSessionManager(),
       },
       workspaceActivity: {
-        applySessionIntervention: () => undefined,
+        applyPersistedSessionState: () => undefined,
         applySessionStatus: () => undefined,
         applySessionActivity: () => undefined,
         removeSession: () => undefined,

@@ -112,6 +112,11 @@ describe("statusActivityKind", () => {
     expect(hasStatusUnread({ "core:working": true })).toBe(false);
   });
 
+  it("does not turn Goal waiting into a work mark", () => {
+    expect(statusActivityKind({ "core:goal-waiting": true })).toBeUndefined();
+    expect(statusWorkKind({ "core:goal-waiting": true, "core:terminal": true })).toBe("terminal");
+  });
+
   it("falls back to the generic work mark for a flag id this build does not know", () => {
     expect(statusActivityKind({ "core:future": true })).toBe("session");
   });

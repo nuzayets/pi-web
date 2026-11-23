@@ -7,6 +7,7 @@ import type { PiSessionListEntry } from "./piSessionService.js";
 import type { SessionUiMetadata } from "../../shared/pluginApiTypes.js";
 import { sessionUiMetadataFromEntry } from "./sessionMetadata.js";
 import { interventionStateFromEntry } from "./sessionIntervention.js";
+import { goalWaitingFromEntry } from "./sessionGoalWait.js";
 import { cwdPathsEqual } from "../workingDirectory.js";
 import { parsePersistedChildSubsessionLink, parsePersistedParentSubsessionLink, type PersistedChildSubsessionLink, type PersistedParentSubsessionLink } from "./subsessionProvenance.js";
 
@@ -37,8 +38,8 @@ import { parsePersistedChildSubsessionLink, parsePersistedParentSubsessionLink, 
  * Per-line work is minimal: lines are classified from their leading
  * `{"type":"..."` bytes without ever decoding them, and lines are only turned
  * into strings and JSON-parsed when they matter — the header, `session_info`
- * lines (rare, one per rename), custom entries for explicitly public metadata,
- * and message lines until the first user text
+ * lines (rare, one per rename), custom entries for explicitly public metadata
+ * and Goal state, and message lines until the first user text
  * message has been found. Message bodies after that point (which hold the huge
  * tool results and assistant replies) are neither decoded nor parsed.
  */
@@ -244,6 +245,7 @@ interface SummaryFoldState {
   name: string | undefined;
   metadata?: SessionUiMetadata;
   interventionRequired?: boolean;
+  goalWaiting?: boolean;
   childLinks?: PersistedChildSubsessionLink[];
   parentLinks?: PersistedParentSubsessionLink[];
 }
@@ -374,6 +376,7 @@ function buildSummaryFromFold(fold: SummaryFoldState, filePath: string, mtime: D
     messageCount: fold.messageCount,
     firstMessage: fold.firstMessageText ?? "(no messages)",
     ...(fold.interventionRequired === true ? { interventionRequired: true } : {}),
+    ...(fold.goalWaiting === true ? { goalWaiting: true } : {}),
     // Never built: see the listing contract above. Kept because SDK-built
     // entries (cleanup listing) still carry the field.
     allMessagesText: "",
@@ -409,6 +412,8 @@ function processLineBytes(data: Buffer, start: number, end: number, state: Summa
     const entry = tryParseEntry(data.toString("utf8", start, end));
     const intervention = interventionStateFromEntry(entry);
     if (intervention !== undefined) state.interventionRequired = intervention;
+    const goalWaiting = goalWaitingFromEntry(entry);
+    if (goalWaiting !== undefined) state.goalWaiting = goalWaiting;
     const childLink = parsePersistedChildSubsessionLink(entry);
     if (childLink !== undefined) (state.childLinks ??= []).push(childLink);
     const parentLink = parsePersistedParentSubsessionLink(entry);
@@ -446,6 +451,8 @@ function processLineBytes(data: Buffer, start: number, end: number, state: Summa
   else if (entry["type"] === "custom") {
     const intervention = interventionStateFromEntry(entry);
     if (intervention !== undefined) state.interventionRequired = intervention;
+    const goalWaiting = goalWaitingFromEntry(entry);
+    if (goalWaiting !== undefined) state.goalWaiting = goalWaiting;
     const metadata = sessionUiMetadataFromEntry(entry);
     if (metadata !== undefined) state.metadata = metadata;
   } else if (entry["type"] === "message") {

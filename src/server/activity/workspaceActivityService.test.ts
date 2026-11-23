@@ -66,6 +66,7 @@ describe("WorkspaceActivityService", () => {
       workspaces: [],
       sessions: [],
       interventionSessions: [{ sessionId: "s1", cwd: "/repo" }],
+      goalWaitingSessions: [],
     });
 
     service.applySessionActivity("/moved", { sessionId: "s1", phase: "idle", label: "Idle", at: "now" });
@@ -81,8 +82,8 @@ describe("WorkspaceActivityService", () => {
     service.applySessionStatus("/repo", status({ isStreaming: true }));
     service.applySessionActivity("/repo", { sessionId: "s2", phase: "active", label: "tool", at: "now" });
     for (const sessionId of ["s1", "s2"]) {
-      service.applySessionIntervention("/repo", sessionId, true);
-      service.applySessionIntervention("/repo", sessionId, false);
+      service.applyPersistedSessionState("/repo", sessionId, { interventionRequired: true });
+      service.applyPersistedSessionState("/repo", sessionId, { interventionRequired: false });
     }
 
     expect(service.snapshot().sessions).toEqual([
@@ -91,17 +92,17 @@ describe("WorkspaceActivityService", () => {
     ]);
     expect(service.snapshot().interventionSessions).toEqual([]);
 
-    service.applySessionIntervention("/idle", "s3", true);
+    service.applyPersistedSessionState("/idle", "s3", { interventionRequired: true });
     expect(service.snapshot().interventionSessions).toEqual([{ sessionId: "s3", cwd: "/idle" }]);
-    service.applySessionIntervention("/idle", "s3", false);
+    service.applyPersistedSessionState("/idle", "s3", { interventionRequired: false });
     expect(service.snapshot().interventionSessions).toEqual([]);
   });
 
   it("removes and reconciles intervention records without clearing other workspaces", () => {
     const { service } = activityRecord();
-    service.applySessionIntervention("/repo", "s1", true);
-    service.applySessionIntervention("/repo", "s2", true);
-    service.applySessionIntervention("/other", "s3", true);
+    service.applyPersistedSessionState("/repo", "s1", { interventionRequired: true });
+    service.applyPersistedSessionState("/repo", "s2", { interventionRequired: true });
+    service.applyPersistedSessionState("/other", "s3", { interventionRequired: true });
 
     service.reconcileSessionActivity("/repo", ["s2"]);
     expect(service.snapshot().interventionSessions).toEqual([

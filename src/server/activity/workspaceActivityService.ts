@@ -13,6 +13,7 @@ interface SessionRecord {
   status?: SessionStatus;
   activity?: SessionActivity;
   interventionRequired?: boolean;
+  goalWaiting?: boolean;
 }
 
 interface TerminalRecord {
@@ -38,18 +39,20 @@ export class WorkspaceActivityService {
     record.cwd = cwd;
     record.status = status;
     record.interventionRequired = status.interventionRequired === true;
+    record.goalWaiting = status.goalWaiting === true;
     if (!isSessionActive(status) && record.activity?.phase === "active") delete record.activity;
     this.sessions.set(status.sessionId, record);
     this.pruneIdleSession(status.sessionId);
     this.notifyChangedCwds(previousCwd, cwd);
   }
 
-  /** Seed durable intervention state without replacing live work state. */
-  applySessionIntervention(cwd: string, sessionId: string, required: boolean): void {
+  /** Seed durable intervention and Goal waiting state without replacing live work state. */
+  applyPersistedSessionState(cwd: string, sessionId: string, state: { interventionRequired?: boolean; goalWaiting?: boolean }): void {
     const record = this.sessions.get(sessionId) ?? { cwd };
     const previousCwd = record.cwd;
     record.cwd = cwd;
-    record.interventionRequired = required;
+    record.interventionRequired = state.interventionRequired === true;
+    record.goalWaiting = state.goalWaiting === true;
     this.sessions.set(sessionId, record);
     this.pruneIdleSession(sessionId);
     this.notifyChangedCwds(previousCwd, cwd);
@@ -99,6 +102,7 @@ export class WorkspaceActivityService {
     workspaces: ActiveWorkspaceActivity[];
     sessions: { sessionId: string; cwd: string }[];
     interventionSessions?: { sessionId: string; cwd: string }[];
+    goalWaitingSessions?: { sessionId: string; cwd: string }[];
   } {
     return {
       workspaces: this.activeCwds().map((cwd) => this.summaryForCwd(cwd)),
@@ -106,12 +110,15 @@ export class WorkspaceActivityService {
         isSessionActive(record.status, record.activity) ? [{ sessionId, cwd: record.cwd }] : []),
       interventionSessions: [...this.sessions].flatMap(([sessionId, record]) =>
         record.interventionRequired === true ? [{ sessionId, cwd: record.cwd }] : []),
+      goalWaitingSessions: [...this.sessions].flatMap(([sessionId, record]) =>
+        record.goalWaiting === true ? [{ sessionId, cwd: record.cwd }] : []),
     };
   }
 
   private pruneIdleSession(sessionId: string): void {
     const record = this.sessions.get(sessionId);
-    if (record !== undefined && record.interventionRequired !== true && !isSessionActive(record.status, record.activity)) {
+    if (record !== undefined && record.interventionRequired !== true && record.goalWaiting !== true
+      && !isSessionActive(record.status, record.activity)) {
       this.sessions.delete(sessionId);
     }
   }
