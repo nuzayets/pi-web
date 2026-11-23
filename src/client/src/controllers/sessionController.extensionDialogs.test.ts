@@ -198,6 +198,41 @@ describe("SessionController extension dialog answers", () => {
     expect(state.status).toEqual(closedStatus);
   });
 
+  it("restores a waiting dialog from a repeated status after a delayed answer response hid it", async () => {
+    // The daemon keeps repeating statuses with open dialogs so this race heals.
+    const running = (pendingDialogs: PendingExtensionDialog[]): SessionStatus => ({ ...statusWithDialogs(oldSession.id, pendingDialogs), isStreaming: true });
+    let respond: (response: ExtensionDialogCloseResponse) => void = () => undefined;
+    const socket = new EmitSocket();
+    let state = selectedState({ selectedSession: undefined });
+    const api: typeof defaultApi = {
+      ...selectableApi(running([dialog("dialog-1")])),
+      answerDialog: () => new Promise((resolve) => { respond = resolve; }),
+    };
+    const controller = new SessionController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      () => undefined,
+      undefined,
+      { api, socket },
+    );
+    await controller.selectSession(oldSession, { updateUrl: false });
+
+    const answering = controller.answerDialog("dialog-1", true);
+    // The extension asks again before the answer's HTTP response arrives.
+    socket.emit({ type: "dialog.closed", dialogId: "dialog-1", reason: "answered", answer: true });
+    socket.emit({ type: "dialog.opened", dialog: dialog("dialog-2") });
+    socket.emit({ type: "status.update", status: running([dialog("dialog-2")]) });
+    controller.flushPendingUpdates();
+    respond(closeResponse(running([])));
+    await answering;
+    expect(state.pendingDialogs).toEqual([]);
+
+    socket.emit({ type: "status.update", status: running([dialog("dialog-2")]) });
+    controller.flushPendingUpdates();
+
+    expect(state.pendingDialogs).toEqual([dialog("dialog-2")]);
+  });
+
   it("cancels a dialog through its own route", async () => {
     const cancelCalls: string[] = [];
     let state = selectedState({ pendingDialogs: [dialog("dialog-1")] });

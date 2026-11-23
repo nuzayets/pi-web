@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
+import type { SessionStatus } from "../../shared/apiTypes.js";
 import { SessionMediaIndex } from "../sessions/sessionMediaIndex.js";
 import { SessionEventHub, type RealtimeSocket } from "./sessionEventHub.js";
 
@@ -10,6 +11,26 @@ class FakeSocket extends EventEmitter implements RealtimeSocket {
   readyState = this.OPEN;
   send = vi.fn();
   terminate = vi.fn();
+}
+
+function sessionStatus(patch: Partial<SessionStatus> = {}): SessionStatus {
+  return {
+    sessionId: "s1",
+    isStreaming: true,
+    isCompacting: false,
+    isBashRunning: false,
+    pendingMessageCount: 0,
+    queuedMessages: [],
+    messageCount: 1,
+    tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    cost: 0,
+    ...patch,
+  };
+}
+
+function publishStatusOnBothChannels(hub: SessionEventHub, status: SessionStatus): void {
+  hub.publish(status.sessionId, { type: "status.update", status });
+  hub.publishGlobal({ type: "status.update", status });
 }
 
 describe("SessionEventHub", () => {
@@ -322,6 +343,97 @@ describe("SessionEventHub", () => {
 
     expect(failed.terminate).toHaveBeenCalledOnce();
     expect(failed.send).toHaveBeenCalledOnce();
+  });
+
+  it("skips repeated active statuses on both channels without consuming a sequence number", () => {
+    const hub = new SessionEventHub();
+    const sessionSocket = new FakeSocket();
+    const globalSocket = new FakeSocket();
+    hub.add("s1", sessionSocket);
+    hub.addGlobal(globalSocket);
+    const status = sessionStatus();
+
+    // A fresh but equal object is a repeat: work republishes the same status per agent event.
+    for (let index = 0; index < 3; index += 1) publishStatusOnBothChannels(hub, sessionStatus());
+    hub.publish("s1", { type: "assistant.delta", text: "a" });
+
+    // Delivered frames keep the existing wire encoding and a gapless sequence.
+    expect(sessionSocket.send.mock.calls).toEqual([
+      [JSON.stringify({ type: "status.update", status, seq: 1 })],
+      [JSON.stringify({ type: "assistant.delta", text: "a", seq: 2 })],
+    ]);
+    expect(globalSocket.send.mock.calls).toEqual([[JSON.stringify({ type: "status.update", status })]]);
+    expect(hub.currentSeq("s1")).toBe(2);
+  });
+
+  it("delivers changed statuses and every inactive status, even an identical one", () => {
+    const hub = new SessionEventHub();
+    const sessionSocket = new FakeSocket();
+    const globalSocket = new FakeSocket();
+    hub.add("s1", sessionSocket);
+    hub.addGlobal(globalSocket);
+    const working = sessionStatus();
+    const moreMessages = sessionStatus({ messageCount: 2 });
+    // Clients clear an active activity label whenever they apply an inactive status.
+    const idle = sessionStatus({ isStreaming: false, messageCount: 2 });
+    const sequence = [working, moreMessages, idle, idle, moreMessages, moreMessages];
+
+    for (const status of sequence) publishStatusOnBothChannels(hub, status);
+
+    const delivered = [working, moreMessages, idle, idle, moreMessages];
+    expect(sessionSocket.send.mock.calls).toEqual(delivered.map((status, index) => [JSON.stringify({ type: "status.update", status, seq: index + 1 })]));
+    expect(globalSocket.send.mock.calls).toEqual(delivered.map((status) => [JSON.stringify({ type: "status.update", status })]));
+  });
+
+  it("repeats an active status while an extension dialog waits for the user", () => {
+    const hub = new SessionEventHub();
+    const sessionSocket = new FakeSocket();
+    const globalSocket = new FakeSocket();
+    hub.add("s1", sessionSocket);
+    hub.addGlobal(globalSocket);
+    const working = sessionStatus();
+    const dialog = { dialogId: "d1", kind: "confirm" as const, title: "Allow?", askedAt: "2026-01-01T00:00:00.000Z", runScoped: true };
+    const waiting = sessionStatus({ interventionRequired: true, pendingDialogs: [dialog] });
+    const sequence = [working, waiting, waiting, working, working];
+
+    for (const status of sequence) publishStatusOnBothChannels(hub, status);
+
+    // A repeat restores a dialog that an older HTTP response dropped in the browser.
+    // The dialog also resets the comparison, so the next working status goes out.
+    const delivered = [working, waiting, waiting, working];
+    expect(sessionSocket.send.mock.calls).toEqual(delivered.map((status, index) => [JSON.stringify({ type: "status.update", status, seq: index + 1 })]));
+    expect(globalSocket.send.mock.calls).toEqual(delivered.map((status) => [JSON.stringify({ type: "status.update", status })]));
+  });
+
+  it("delivers the next status after a subscriber joins its channel", () => {
+    const hub = new SessionEventHub();
+    const sessionSocket = new FakeSocket();
+    const globalSocket = new FakeSocket();
+    hub.add("s1", sessionSocket);
+    hub.addGlobal(globalSocket);
+    const status = sessionStatus();
+    publishStatusOnBothChannels(hub, status);
+
+    const lateSessionSocket = new FakeSocket();
+    hub.add("s1", lateSessionSocket);
+    hub.add("s2", new FakeSocket());
+    publishStatusOnBothChannels(hub, status);
+
+    // Only the joined channel repeats; a join for another session changes nothing.
+    const sessionFrame = JSON.stringify({ type: "status.update", status, seq: 2 });
+    expect(sessionSocket.send).toHaveBeenLastCalledWith(sessionFrame);
+    expect(lateSessionSocket.send.mock.calls).toEqual([[sessionFrame]]);
+    expect(globalSocket.send).toHaveBeenCalledOnce();
+
+    const lateGlobalSocket = new FakeSocket();
+    hub.addGlobal(lateGlobalSocket);
+    publishStatusOnBothChannels(hub, status);
+
+    const globalFrame = JSON.stringify({ type: "status.update", status });
+    expect(globalSocket.send.mock.calls).toEqual([[globalFrame], [globalFrame]]);
+    expect(lateGlobalSocket.send.mock.calls).toEqual([[globalFrame]]);
+    expect(sessionSocket.send).toHaveBeenCalledTimes(2);
+    expect(hub.currentSeq("s1")).toBe(2);
   });
 
   it("reports zero seq for a session that has never published", () => {

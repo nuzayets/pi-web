@@ -1,4 +1,5 @@
-import type { GlobalSessionEvent, RealtimeEvent, SessionNotificationSummaryEvent, SessionUiEvent } from "../../shared/apiTypes.js";
+import type { GlobalSessionEvent, RealtimeEvent, SessionNotificationSummaryEvent, SessionStatus, SessionUiEvent } from "../../shared/apiTypes.js";
+import { isSessionActive } from "../../shared/activity.js";
 import { projectBrowserSessionEvent } from "../browserMessageProjection.js";
 import { SESSION_MEDIA_MODE } from "../../shared/sessionMedia.js";
 import { SessionMediaIndex, type SessionMediaScope } from "../sessions/sessionMediaIndex.js";
@@ -15,6 +16,9 @@ export class SessionEventHub {
   private readonly socketsBySession = new Map<string, { inline: Set<RealtimeSocket>; reference: Set<RealtimeSocket> }>();
   private readonly globalSockets = new Set<RealtimeSocket>();
   private readonly seqBySession = new Map<string, number>();
+  /** Last published active status JSON per session, tracked separately per channel. */
+  private readonly sessionActiveStatuses = new Map<string, string>();
+  private readonly globalActiveStatuses = new Map<string, string>();
   private globalJoinFrame: (() => RealtimeEvent) | undefined;
 
   /** The service and routes use this same owned index; service disposal clears it. */
@@ -32,6 +36,8 @@ export class SessionEventHub {
       sockets.delete(socket);
       if (subscribers.inline.size === 0 && subscribers.reference.size === 0) this.socketsBySession.delete(sessionId);
     });
+    // A joining subscriber has seen no status yet, so the next one is not a repeat.
+    this.sessionActiveStatuses.delete(sessionId);
   }
 
   /**
@@ -48,11 +54,15 @@ export class SessionEventHub {
   addGlobal(socket: RealtimeSocket): void {
     this.globalSockets.add(socket);
     socket.on("close", () => this.globalSockets.delete(socket));
+    // A joiner has seen no status yet, and sidebar statuses arrive only on this channel.
+    this.globalActiveStatuses.clear();
     const joinFrame = this.globalJoinFrame?.();
     if (joinFrame !== undefined) this.sendToSocket(this.globalSockets, socket, JSON.stringify(joinFrame));
   }
 
   publish(sessionId: string, event: SessionUiEvent, mediaScope?: SessionMediaScope): void {
+    // Checked before stamping so skipped repeats leave no sequence gap.
+    if (event.type === "status.update" && isRepeatedActiveStatus(this.sessionActiveStatuses, sessionId, event.status)) return;
     const seq = (this.seqBySession.get(sessionId) ?? 0) + 1;
     this.seqBySession.set(sessionId, seq);
     // Index even without subscribers: live tool output may not be persisted yet
@@ -74,6 +84,7 @@ export class SessionEventHub {
   }
 
   publishGlobal(event: GlobalSessionEvent): void {
+    if (event.type === "status.update" && isRepeatedActiveStatus(this.globalActiveStatuses, event.status.sessionId, event.status)) return;
     this.publishRealtime(event);
   }
 
@@ -105,4 +116,22 @@ export class SessionEventHub {
       }
     }
   }
+}
+
+/**
+ * Active work republishes its unchanged status on every agent event, so only
+ * active repeats are skipped. Inactive statuses always go out: clients clear an
+ * active activity label when they apply one, even an identical one. So do
+ * statuses with open dialogs: a repeat restores a dialog the run waits on after
+ * an older HTTP response dropped it from the browser.
+ */
+function isRepeatedActiveStatus(delivered: Map<string, string>, sessionId: string, status: SessionStatus): boolean {
+  if (!isSessionActive(status) || (status.pendingDialogs?.length ?? 0) > 0) {
+    delivered.delete(sessionId);
+    return false;
+  }
+  const json = JSON.stringify(status);
+  if (delivered.get(sessionId) === json) return true;
+  delivered.set(sessionId, json);
+  return false;
 }

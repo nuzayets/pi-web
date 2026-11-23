@@ -120,6 +120,28 @@ describe("SessionController live events", () => {
     expect(state.sessionStatuses[oldSession.id]).toMatchObject({ sessionId: oldSession.id, isStreaming: false });
   });
 
+  it("treats a repeated active status as a no-op even after an active activity", () => {
+    // Daemons rely on this to omit active status repeats; idle repeats still clear activity (above).
+    let state: AppState = { ...initialAppState(), selectedSession: oldSession, sessions: [oldSession] };
+    const controller = new SessionController(
+      () => state,
+      (patch) => { state = { ...state, ...patch }; },
+      () => undefined,
+      undefined,
+      { socket: new FakeSocket() },
+    );
+    const working = { ...status(oldSession.id), isStreaming: true, messageCount: 2 };
+    controller.applyGlobalEvent({ type: "status.update", status: working });
+    controller.applyGlobalEvent({ type: "activity.update", activity: { sessionId: oldSession.id, phase: "active", label: "running tool", at: "t1" } });
+    controller.flushPendingUpdates();
+    const withoutRepeat = state;
+
+    controller.applyGlobalEvent({ type: "status.update", status: { ...working } });
+    controller.flushPendingUpdates();
+
+    expect(state).toEqual(withoutRepeat);
+  });
+
   it("updates visible session message counts from live status events", () => {
     let state: AppState = {
       ...initialAppState(),
