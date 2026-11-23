@@ -110,7 +110,7 @@ import { createRequestHumanInterventionToolDefinition } from "./requestHumanInte
 import { createArchiveSelfToolDefinition, type CheckSelfArchive } from "./archiveSelfTool.js";
 import { continuesConversation, requestsHumanIntervention, SESSION_INTERVENTION_CUSTOM_TYPE, sessionInterventionRequired } from "./sessionIntervention.js";
 import { goalWaitingFromEntry, sessionGoalWaiting } from "./sessionGoalWait.js";
-import { createAskUserOutcome, openAskUserRequest, renderAskUserAnswersText, resolveAskUserRequest } from "./askUserDomain.js";
+import { changesOpenAskUserRequest, createAskUserOutcome, openAskUserRequest, renderAskUserAnswersText, resolveAskUserRequest } from "./askUserDomain.js";
 import { PendingExtensionDialogStore, type ExtensionDialogCancelReason } from "./pendingExtensionDialogStore.js";
 import { ExtensionDialogWaiters, effectiveExtensionDialogTimeoutMs, extensionDialogCancelValue } from "./extensionDialogWaiters.js";
 import { DEFAULT_EXTENSION_DIALOGS_TIMEOUT_MS } from "../../config.js";
@@ -1271,6 +1271,8 @@ export class PiSessionService implements SessionRouteService {
   readonly mcpAuthFlows = new McpAuthFlowService();
   private readonly runtimeMessageCounts = new WeakMap<PiAgentSession, number>();
   private readonly interventionStates = new WeakMap<PiAgentSession, boolean>();
+  /** Whether the active branch has an open ask_user form, read only while intervention could end. */
+  private readonly openAskStates = new WeakMap<PiAgentSession, boolean>();
   private readonly goalWaitingStates = new WeakMap<PiAgentSession, boolean>();
   /** Fresh tool intent only: reopening a transcript never replays archival. */
   private readonly selfArchiveRequests = new WeakMap<PiAgentSession, { sessionId: string; toolCallId: string; persisted: boolean; settled: boolean }>();
@@ -5326,6 +5328,7 @@ export class PiSessionService implements SessionRouteService {
     this.restoreSubsessionReceipts(session);
     this.reconcileRuntimeMessageCount(session);
     this.interventionStates.set(session, sessionInterventionRequired(session.sessionManager.getEntries?.() ?? session.sessionManager.getBranch()));
+    this.openAskStates.delete(session);
     this.goalWaitingStates.set(session, sessionGoalWaiting(session.sessionManager.getBranch()));
     this.publishedSessionNames.set(session, { sessionId: session.sessionId, name: session.sessionName });
     this.statistics.initialize(session);
@@ -5342,12 +5345,17 @@ export class PiSessionService implements SessionRouteService {
       // entry_appended. Only message entries contribute to the transcript count.
       const role = getString(message, "role");
       this.observeSelfArchiveRequest(session, eventType, message, event);
+      if (eventType === "session_tree") this.openAskStates.delete(session);
       if (eventType === "message_end") {
+        if (changesOpenAskUserRequest(message)) this.openAskStates.delete(session);
         if (requestsHumanIntervention(message)) this.setInterventionRequired(session, true);
-        // The transcript alone decides, matching the client's open-question
-        // rule: a run woken by a passive notice keeps the request open until
-        // the agent replies, and steering delivered mid-run closes it.
-        else if (continuesConversation(message)) this.setInterventionRequired(session, false);
+        // The transcript alone decides: a run woken by a passive notice keeps the
+        // request until the agent replies, and steering delivered mid-run ends it.
+        // While an ask_user form is open (the transcript snapshot's openAsk), only
+        // its answer or skip ends the request; a newer form takes its place.
+        else if (continuesConversation(message) && this.interventionRequired(session) && !this.hasOpenAsk(session, message)) {
+          this.setInterventionRequired(session, false);
+        }
       }
       // pi-goal appends its whole state on every change; the status published below carries it.
       const goalWaiting = eventType === "entry_appended" ? goalWaitingFromEntry(entry) : undefined;
@@ -5915,6 +5923,20 @@ export class PiSessionService implements SessionRouteService {
   private interventionRequired(session: PiAgentSession): boolean {
     return this.interventionStates.get(session)
       ?? sessionInterventionRequired(session.sessionManager.getEntries?.() ?? session.sessionManager.getBranch());
+  }
+
+  /**
+   * Whether the active branch, plus a message that message_end reports before
+   * Pi persists it, has an open ask_user form. Kept until an ask_user result,
+   * an answer or a tree change could alter it.
+   */
+  private hasOpenAsk(session: PiAgentSession, message: unknown): boolean {
+    let open = this.openAskStates.get(session);
+    if (open === undefined) {
+      open = openAskUserRequest([...historyMessagesFromEntries(session.sessionManager.getBranch()), message]) !== undefined;
+      this.openAskStates.set(session, open);
+    }
+    return open;
   }
 
   /** Every hosted session is bound before its status is read; anything else is not waiting. */

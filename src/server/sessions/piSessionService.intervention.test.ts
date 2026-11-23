@@ -25,6 +25,18 @@ function interventionService(required = false) {
   return { manager, fake, events, service, workspaceActivity };
 }
 
+function appendAsk(manager: SessionManager, askId: string) {
+  const ask = { askId, askedAt: "2026-02-01T10:00:00.000Z", questions: [{ id: "db", question: "Which database?", options: [] }] };
+  return manager.appendMessage({
+    role: "toolResult", toolCallId: `call-${askId}`, toolName: "ask_user", content: [{ type: "text", text: "Posted" }],
+    isError: false, details: { ask, interventionRequired: true }, timestamp: Date.now(),
+  });
+}
+
+function answers(askId: string) {
+  return { role: "custom", customType: ASK_USER_ANSWERS_CUSTOM_TYPE, content: "answers", display: true, details: { askId } };
+}
+
 describe("generic human intervention", () => {
   it("terminates a prose-question run and emits a generic signal without a form", async () => {
     const tool = createRequestHumanInterventionToolDefinition();
@@ -69,7 +81,7 @@ describe("generic human intervention", () => {
     const { manager, fake, service } = interventionService();
     try {
       await service.status(sessionRef(id));
-      fake.emit({ type: "message_end", message: { role: "toolResult", toolName: "ask_user", isError: false, details: { interventionRequired: true } } });
+      fake.emit({ type: "message_end", message: { role: "toolResult", toolName: "request_human_intervention", isError: false, details: { interventionRequired: true } } });
       expect((await service.status(sessionRef(id))).interventionRequired).toBe(true);
 
       // Steering queued before the request is delivered after it within the run.
@@ -84,6 +96,39 @@ describe("generic human intervention", () => {
     try {
       await service.status(sessionRef(id));
       fake.emit({ type: "message_end", message: { role: "custom", customType: ASK_USER_ANSWERS_CUSTOM_TYPE, content: "answers", display: true } });
+      expect((await service.status(sessionRef(id))).interventionRequired).toBe(false);
+    } finally { await service.dispose(); }
+  });
+
+  it("keeps an open ask_user form waiting through later messages and answers to an earlier form, until its own answer", async () => {
+    const { manager, fake, service } = interventionService(true);
+    appendAsk(manager, "ask-1");
+    appendAsk(manager, "ask-2");
+    try {
+      await service.status(sessionRef(id));
+      fake.emit({ type: "message_end", message: { role: "user", content: [{ type: "text", text: "Use DuckDB" }] } });
+      fake.emit({ type: "message_end", message: { role: "assistant", content: [], stopReason: "stop" } });
+      fake.emit({ type: "message_end", message: answers("ask-1") });
+      expect((await service.status(sessionRef(id))).interventionRequired).toBe(true);
+
+      fake.emit({ type: "message_end", message: answers("ask-2") });
+      expect((await service.status(sessionRef(id))).interventionRequired).toBe(false);
+    } finally { await service.dispose(); }
+  });
+
+  it("ends the request on the next message once the open form is off the active branch", async () => {
+    const { manager, fake, service } = interventionService(true);
+    const beforeAsk = manager.appendMessage({ role: "user", content: "Before the question", timestamp: Date.now() });
+    appendAsk(manager, "ask-1");
+    try {
+      await service.status(sessionRef(id));
+      fake.emit({ type: "message_end", message: { role: "user", content: [{ type: "text", text: "Use DuckDB" }] } });
+      expect((await service.status(sessionRef(id))).interventionRequired).toBe(true);
+
+      manager.branch(beforeAsk);
+      fake.emit({ type: "session_tree" });
+      expect((await service.status(sessionRef(id))).interventionRequired).toBe(true);
+      fake.emit({ type: "message_end", message: { role: "user", content: [{ type: "text", text: "Try another way" }] } });
       expect((await service.status(sessionRef(id))).interventionRequired).toBe(false);
     } finally { await service.dispose(); }
   });

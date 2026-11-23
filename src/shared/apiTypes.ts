@@ -697,7 +697,11 @@ export interface SessionNotificationSummaryEvent {
 
 export interface SessionInfo extends SessionRef {
   path: string;
-  /** Session yielded for human input; any new agent run clears this state. */
+  /**
+   * Session yielded for human input. Continuing the conversation clears this
+   * state, except that an open ask_user form keeps it until that form, or a
+   * newer one that replaces it, is answered or skipped.
+   */
   interventionRequired?: boolean;
   /**
    * The session's latest saved pi-goal state is an active Goal that is waiting.

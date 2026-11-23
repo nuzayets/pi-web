@@ -626,7 +626,7 @@ An agent can call `request_human_intervention` with a short, self-contained `rea
 
 The static hollow ring appears on the session and rolls up to its workspace, project, and machine, including collapsed agent-subsession groups. Unread activity remains separate. The state clears as soon as the conversation continues: a message from you, an agent reply or tool result, or answers to the question form. This includes a message you queued earlier that is delivered after the request. Passive entries, such as extension notices, `!command` output, and compaction or branch summaries, do not clear it; a run woken by another agent or a system message clears it once the agent replies. Merely queueing a message, reading the session, or navigating its transcript does not clear it. If the agent still needs help after resuming, it requests intervention again.
 
-Agent-requested intervention is saved with the session and survives daemon restarts. It is session execution state, not an outstanding question or a branch-specific form. Newly posted `ask_user` forms set the same state automatically. Pending extension dialogs also show **Needs input**, but retain their own answer, cancellation, and timeout lifecycle; runtime-only dialogs are not restored after a daemon restart.
+Agent-requested intervention is saved with the session and survives daemon restarts. It is session execution state, not a branch-specific form. Newly posted `ask_user` forms set the same state automatically. While a form is open, your messages and agent replies do not clear it; answering or skipping the form does. A newer form replaces the open one. Pending extension dialogs also show **Needs input**, but retain their own answer, cancellation, and timeout lifecycle; runtime-only dialogs are not restored after a daemon restart.
 
 Restart the session daemon after upgrading to activate the tool and state tracking.
 
@@ -638,7 +638,7 @@ Use **Settings → Session daemon → Allow agents to ask questions** to change 
 
 Agents can ask questions with choices or free-text answers. You may leave questions unanswered; partial submissions are confirmed before sending. Answering or skipping resumes the agent.
 
-Forms are saved in the conversation and survive restarts. Only the latest form in the active conversation can be open, and the same rule that clears **Needs input** closes it: answering, skipping, a later message, or an agent reply. Passive entries after the form leave it open. Earlier forms remain expandable for read-only review. Returning the conversation to a question reopens it; archived conversations remain read-only.
+Forms are saved in the conversation and survive restarts. Only the latest form in the active conversation can be open. It stays open until you answer or skip it, or the agent posts a newer form; later messages, agent replies, and passive entries leave it open. Earlier forms remain expandable for read-only review. Returning the conversation to a question reopens it; archived conversations remain read-only.
 
 Restart the session daemon after changing `askUser` or after upgrading PI WEB to a version that introduces this tool. For the systemd user service, run `systemctl --user restart pi-web-sessiond`.
 

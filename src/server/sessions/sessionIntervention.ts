@@ -15,8 +15,8 @@ export function requestsHumanIntervention(message: unknown): boolean {
  * Whether a transcript message moves the conversation past an open request:
  * a user, assistant, or tool-result message, or delivered question answers.
  * Passive entries (other custom messages, shell output, summaries) do not.
- * The client applies the same rule to the open question form; see
- * `continuesConversation` in `src/client/src/chatQuestions.ts`.
+ * While an ask_user form is open, only its answer or skip ends a request; a
+ * newer form takes its place.
  */
 export function continuesConversation(message: unknown): boolean {
   if (!isRecord(message)) return false;
