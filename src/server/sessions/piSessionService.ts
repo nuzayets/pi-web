@@ -1281,6 +1281,8 @@ export class PiSessionService implements SessionRouteService {
   private readonly pendingPromptEchoes = new WeakMap<PiAgentSession, { userIndex: number; message: ReturnType<typeof userMessage> }[]>();
   private readonly publishedAssistantPartials = new WeakMap<PiAgentSession, unknown>();
   private readonly assistantStreamIds = new WeakMap<PiAgentSession, string>();
+  /** Latest live assistant reply; `entryId` is set once its turn ends after Pi saved it. */
+  private readonly savedReplies = new WeakMap<PiAgentSession, { message: unknown; streamId: string | undefined; entryId?: string }>();
   /** Settings-wide queue preventing enabled-model read/modify/write races across sessions. */
   private modelScopeMutationQueue: Promise<void> = Promise.resolve();
   /** Global and workspace-owned enabled-model states; live session scopes project one entry lazily. */
@@ -5144,11 +5146,50 @@ export class PiSessionService implements SessionRouteService {
     await this.publishUnreadMutations(mutations);
   }
 
+  /**
+   * Link a live assistant reply to its saved transcript entry. message_end
+   * listeners run before Pi saves the message; the turn_end carrying the same
+   * message object follows that save, so the entry is found by identity.
+   */
+  private trackSavedReply(session: PiAgentSession, eventType: string | undefined, message: unknown, streamId: string | undefined): void {
+    if (eventType === "message_end" && getString(message, "role") === "assistant") {
+      this.savedReplies.set(session, { message, streamId });
+      return;
+    }
+    const reply = this.savedReplies.get(session);
+    if (eventType !== "turn_end" || reply === undefined || reply.message !== message || reply.entryId !== undefined) return;
+    const entryId = session.sessionFile === undefined ? undefined : savedMessageEntryId(session.sessionManager.getBranch(), message);
+    if (entryId === undefined) {
+      this.savedReplies.delete(session);
+      return;
+    }
+    reply.entryId = entryId;
+    if (reply.streamId === undefined) return;
+    this.events.publish(
+      session.sessionId,
+      { type: "assistant.saved", streamId: reply.streamId, entryId },
+      { id: session.sessionId, cwd: session.sessionManager.getCwd() },
+    );
+  }
+
+  /**
+   * The ending span's latest saved reply, while the transcript shows nothing
+   * after it. Every idle observation consumes it, so it cannot name a later span.
+   */
+  private takeCompletedReplyEntryId(session: PiAgentSession): string | undefined {
+    const entryId = this.savedReplies.get(session)?.entryId;
+    this.savedReplies.delete(session);
+    if (entryId === undefined) return undefined;
+    return newestTranscriptEntryId(session.sessionManager.getBranch()) === entryId ? entryId : undefined;
+  }
+
   private observeUnreadActivityState(session: PiAgentSession): void {
+    const active = this.hasActiveWork(session);
     const mutations = this.unreadStore.observeActivityState(
       session.sessionId,
       canonicalizeStoredCwd(session.sessionManager.getCwd()),
-      this.hasActiveWork(session),
+      active,
+      active ? undefined : this.takeCompletedReplyEntryId(session),
     );
     if (mutations.length === 0) return;
     void this.publishUnreadMutations(mutations).catch(() => undefined);
@@ -5320,6 +5361,7 @@ export class PiSessionService implements SessionRouteService {
       } else if ((eventType === "message_end" && getString(message, "role") === "assistant") || eventType === "agent_end") {
         this.publishedAssistantPartials.delete(session);
       }
+      this.trackSavedReply(session, eventType, message, streamId);
       const clientEvent = toClientEvent(event, session.thinkingLevel, streamId);
       if ((clientEvent.type === "message.end" || clientEvent.type === "message.append") && clientEvent.message !== undefined) {
         clientEvent.message = this.browserTranscriptMessage(session, clientEvent.message);
@@ -6585,6 +6627,24 @@ async function navigateTreeRetainingCustomMessage(
 function setSessionTreeLeaf(manager: PiSessionManager, leafId: string | null): void {
   if (leafId === null) manager.resetLeaf();
   else manager.branch(leafId);
+}
+
+/** Pi saves the message object it emitted, so identity names its entry without guessing. */
+function savedMessageEntryId(branch: readonly unknown[], message: unknown): string | undefined {
+  for (let index = branch.length - 1; index >= 0; index -= 1) {
+    const entry = branch[index];
+    if (getString(entry, "type") === "message" && getProperty(entry, "message") === message) return getString(entry, "id");
+  }
+  return undefined;
+}
+
+/** The branch entry that history reads show last. */
+function newestTranscriptEntryId(branch: readonly unknown[]): string | undefined {
+  for (let index = branch.length - 1; index >= 0; index -= 1) {
+    const entry = branch[index];
+    if (historyMessagesFromEntries([entry]).length > 0) return getString(entry, "id");
+  }
+  return undefined;
 }
 
 function transcriptBranchIncludesEntry(entries: readonly unknown[], entryId: string): boolean {

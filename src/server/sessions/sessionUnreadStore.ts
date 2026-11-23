@@ -7,6 +7,7 @@ import {
   SESSION_UNREAD_COMPLETED_AT_MAX_LENGTH,
   SESSION_UNREAD_CWD_MAX_LENGTH,
   SESSION_UNREAD_LIMIT,
+  SESSION_UNREAD_REPLY_ENTRY_ID_MAX_LENGTH,
   SESSION_UNREAD_SESSION_ID_MAX_LENGTH,
   type SessionUnreadAcknowledgeRequest,
   type SessionUnreadCatalogSnapshot,
@@ -17,12 +18,22 @@ import {
 const SESSION_UNREAD_STATE_VERSION = 1;
 const SESSION_UNREAD_FILE_MODE = 0o600;
 
+/**
+ * A catalog row plus provenance that never leaves the store. `origin` marks a
+ * completion recorded while no held row was current. Rows without it (manual
+ * marks, rows written before it existed or by an older daemon, and completions
+ * that replaced such a row) hold automatic acknowledgement until a read clears them.
+ */
+interface StoredSessionUnreadSummary extends SessionUnreadSummary {
+  origin?: "completion";
+}
+
 export interface SessionUnreadPersistedState {
   version: typeof SESSION_UNREAD_STATE_VERSION;
   catalogId: string;
   catalogRevision: number;
   nextCompletionOrder: number;
-  sessions: SessionUnreadSummary[];
+  sessions: StoredSessionUnreadSummary[];
 }
 
 export interface SessionUnreadPersistence {
@@ -61,14 +72,15 @@ interface PendingSessionUnreadPersistence {
  * Completion orders are global and never reused within a catalog epoch. An
  * acknowledgement must carry both the epoch and the observed completion order,
  * so neither an old completion nor a client from reset state can clear newer
- * work.
+ * work. A row is never changed in place, so acknowledging the observed order
+ * can clear only the row, including its `replyEntryId`, that was observed.
  */
 export class SessionUnreadStore {
   private readonly now: () => Date;
   private readonly persistence: SessionUnreadPersistence | undefined;
   private readonly createCatalogId: () => string;
   private readonly onPersistenceError: (operation: "load" | "save", error: unknown) => void;
-  private readonly unreadByIdentity = new Map<string, SessionUnreadSummary>();
+  private readonly unreadByIdentity = new Map<string, StoredSessionUnreadSummary>();
   private readonly activeByIdentity = new Map<string, SessionUnreadIdentity>();
   private readonly excludedByIdentity = new Map<string, SessionUnreadIdentity>();
   private catalogId: string;
@@ -109,13 +121,19 @@ export class SessionUnreadStore {
       catalogRevision: this.catalogRevision,
       sessions: [...this.unreadByIdentity.values()]
         .sort((left, right) => right.completionOrder - left.completionOrder)
-        .map((summary) => ({ ...summary })),
+        .map(publicSummary),
     };
   }
 
-  observeActivityState(sessionId: string, cwd: string, active: boolean): SessionUnreadMutation[] {
+  /**
+   * `replyEntryId` names the saved final reply of a completing activity span.
+   * A completion replacing a held row keeps the hold and drops the reply, so it
+   * never makes a manual or unknown unread automatically acknowledgeable.
+   */
+  observeActivityState(sessionId: string, cwd: string, active: boolean, replyEntryId?: string): SessionUnreadMutation[] {
     this.requireLoaded();
     const identity = requireIdentity(sessionId, cwd);
+    if (replyEntryId !== undefined) requireReplyEntryId(replyEntryId);
     const key = sessionIdentityKey(identity);
     if (this.excludedByIdentity.has(key)) {
       this.activeByIdentity.delete(key);
@@ -127,35 +145,20 @@ export class SessionUnreadStore {
     }
     if (!this.activeByIdentity.has(key)) return [];
 
-    const mutations = this.markUnread(sessionId, cwd);
+    const current = this.unreadByIdentity.get(key);
+    const held = current !== undefined && current.origin !== "completion";
+    const mutations = this.recordUnread(identity, held ? {} : {
+      origin: "completion",
+      ...(replyEntryId === undefined ? {} : { replyEntryId }),
+    });
     this.activeByIdentity.delete(key);
     return mutations;
   }
 
-  /** Record a fresh unread order without consuming an in-flight activity latch. */
+  /** Record a fresh manual unread order without consuming an in-flight activity latch. */
   markUnread(sessionId: string, cwd: string): SessionUnreadMutation[] {
     this.requireLoaded();
-    const identity = requireIdentity(sessionId, cwd);
-    const key = sessionIdentityKey(identity);
-    if (this.excludedByIdentity.has(key)) return [];
-    const completionOrder = incrementSafe(this.nextCompletionOrder, "Session unread completion order exhausted");
-    const willExceedLimit = !this.unreadByIdentity.has(key) && this.unreadByIdentity.size >= SESSION_UNREAD_LIMIT;
-    this.assertRevisionCapacity(willExceedLimit ? 2 : 1);
-    const completedAt = this.now().toISOString();
-
-    this.nextCompletionOrder = completionOrder;
-    const summary: SessionUnreadSummary = {
-      sessionId,
-      cwd,
-      completionOrder,
-      completedAt,
-    };
-    // Reinsert existing identities so map order remains completion order.
-    this.unreadByIdentity.delete(key);
-    this.unreadByIdentity.set(key, summary);
-    const mutations = [this.mutation(identity, summary), ...this.trimToLimit()];
-    this.schedulePersist();
-    return mutations;
+    return this.recordUnread(requireIdentity(sessionId, cwd), {});
   }
 
   /** Clear only the transient active latch for a runtime that is closing or rebinding. */
@@ -353,6 +356,33 @@ export class SessionUnreadStore {
     this.excludedByIdentity.clear();
   }
 
+  private recordUnread(
+    identity: SessionUnreadIdentity,
+    provenance: Pick<StoredSessionUnreadSummary, "origin" | "replyEntryId">,
+  ): SessionUnreadMutation[] {
+    const key = sessionIdentityKey(identity);
+    if (this.excludedByIdentity.has(key)) return [];
+    const completionOrder = incrementSafe(this.nextCompletionOrder, "Session unread completion order exhausted");
+    const willExceedLimit = !this.unreadByIdentity.has(key) && this.unreadByIdentity.size >= SESSION_UNREAD_LIMIT;
+    this.assertRevisionCapacity(willExceedLimit ? 2 : 1);
+    const completedAt = this.now().toISOString();
+
+    this.nextCompletionOrder = completionOrder;
+    const summary: StoredSessionUnreadSummary = {
+      sessionId: identity.sessionId,
+      cwd: identity.cwd,
+      completionOrder,
+      completedAt,
+      ...provenance,
+    };
+    // Reinsert existing identities so map order remains completion order.
+    this.unreadByIdentity.delete(key);
+    this.unreadByIdentity.set(key, summary);
+    const mutations = [this.mutation(identity, summary), ...this.trimToLimit()];
+    this.schedulePersist();
+    return mutations;
+  }
+
   private mutation(identity: SessionUnreadIdentity, unread: SessionUnreadSummary | null): SessionUnreadMutation {
     this.catalogRevision = incrementSafe(this.catalogRevision, "Session unread catalog revision exhausted");
     return {
@@ -362,7 +392,7 @@ export class SessionUnreadStore {
         catalogRevision: this.catalogRevision,
         sessionId: identity.sessionId,
         cwd: identity.cwd,
-        unread: unread === null ? null : { ...unread },
+        unread: unread === null ? null : publicSummary(unread),
       },
     };
   }
@@ -371,7 +401,7 @@ export class SessionUnreadStore {
     const mutations: SessionUnreadMutation[] = [];
     while (this.unreadByIdentity.size > SESSION_UNREAD_LIMIT) {
       let oldestKey: string | undefined;
-      let oldest: SessionUnreadSummary | undefined;
+      let oldest: StoredSessionUnreadSummary | undefined;
       for (const [key, summary] of this.unreadByIdentity) {
         if (oldest === undefined || summary.completionOrder < oldest.completionOrder) {
           oldestKey = key;
@@ -559,7 +589,7 @@ function parsePersistedState(value: unknown): SessionUnreadPersistedState {
   };
 }
 
-function parseSummary(value: unknown): SessionUnreadSummary {
+function parseSummary(value: unknown): StoredSessionUnreadSummary {
   const record = requireRecord(value, "Session unread summary must be an object");
   const completedAt = requireBoundedNonEmptyString(
     record["completedAt"],
@@ -579,7 +609,16 @@ function parseSummary(value: unknown): SessionUnreadSummary {
     cwd: requireBoundedNonEmptyString(record["cwd"], "cwd", SESSION_UNREAD_CWD_MAX_LENGTH),
     completionOrder: requirePositiveSafeInteger(record["completionOrder"], "completionOrder"),
     completedAt,
+    ...(record["replyEntryId"] === undefined ? {} : { replyEntryId: requireReplyEntryId(record["replyEntryId"]) }),
+    // Any other origin value reads like a legacy row: held, not reset.
+    ...(record["origin"] === "completion" ? { origin: "completion" } : {}),
   };
+}
+
+function publicSummary(stored: StoredSessionUnreadSummary): SessionUnreadSummary {
+  const { origin, ...summary } = stored;
+  void origin;
+  return summary;
 }
 
 function requireRecord(value: unknown, message: string): Record<string, unknown> {
@@ -604,6 +643,10 @@ function requireBoundedNonEmptyString(value: unknown, field: string, maxLength: 
 
 function requireCatalogId(value: unknown): string {
   return requireBoundedNonEmptyString(value, "catalogId", SESSION_UNREAD_CATALOG_ID_MAX_LENGTH);
+}
+
+function requireReplyEntryId(value: unknown): string {
+  return requireBoundedNonEmptyString(value, "replyEntryId", SESSION_UNREAD_REPLY_ENTRY_ID_MAX_LENGTH);
 }
 
 function requireNonNegativeSafeInteger(value: unknown, field: string): number {

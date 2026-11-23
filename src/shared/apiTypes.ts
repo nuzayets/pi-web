@@ -555,6 +555,7 @@ export const SESSION_UNREAD_SESSION_ID_MAX_LENGTH = 512;
 export const SESSION_UNREAD_CWD_MAX_LENGTH = 32 * 1024;
 export const SESSION_UNREAD_CATALOG_ID_MAX_LENGTH = 512;
 export const SESSION_UNREAD_COMPLETED_AT_MAX_LENGTH = 64;
+export const SESSION_UNREAD_REPLY_ENTRY_ID_MAX_LENGTH = 512;
 
 export interface SessionUnreadSummary {
   sessionId: string;
@@ -562,6 +563,14 @@ export interface SessionUnreadSummary {
   /** Monotonic within a catalog and never greater than its containing revision. */
   completionOrder: number;
   completedAt: string;
+  /**
+   * Saved transcript entry of the assistant reply that ended this completion,
+   * matching `TranscriptMessage.entryId` and `assistant.saved`. Absent for
+   * manual marks, legacy rows, completions without a saved final reply, and
+   * completions that replaced a manual or legacy row before it was read; only
+   * rows carrying it may be acknowledged automatically.
+   */
+  replyEntryId?: string;
 }
 
 export interface SessionUnreadCatalogSnapshot {
@@ -1530,6 +1539,8 @@ type SessionUiEventBody =
   | { type: "agent.start" }
   | { type: "agent.end" }
   | { type: "message.end"; message?: unknown }
+  /** Published at turn end: the assistant reply streamed as `streamId` is saved as transcript entry `entryId`. */
+  | { type: "assistant.saved"; streamId: string; entryId: string }
   | { type: "status.update"; status: SessionStatus }
   | { type: "activity.update"; activity: SessionActivity }
   | { type: "command.output"; level: "info" | "success" | "error"; message: string; presentation?: CommandOutputPresentation }

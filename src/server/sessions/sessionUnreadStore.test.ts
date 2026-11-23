@@ -2,11 +2,12 @@ import { mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promise
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SESSION_UNREAD_LIMIT, SESSION_UNREAD_SESSION_ID_MAX_LENGTH } from "../../shared/apiTypes.js";
+import { SESSION_UNREAD_LIMIT, SESSION_UNREAD_SESSION_ID_MAX_LENGTH, type SessionUnreadSummary } from "../../shared/apiTypes.js";
 import {
   FileSessionUnreadPersistence,
   SessionUnreadStore,
   defaultSessionUnreadFilePath,
+  type SessionUnreadMutation,
   type SessionUnreadPersistedState,
   type SessionUnreadPersistence,
 } from "./sessionUnreadStore.js";
@@ -105,6 +106,56 @@ describe("SessionUnreadStore", () => {
       catalogId: "catalog-a",
       throughCompletionOrder: secondOrder,
     }).mutations).toEqual([]);
+  });
+
+  it("holds proven replies only behind manual or legacy unread, across reloads", async () => {
+    const persistence = new MemoryPersistence({
+      version: 1,
+      catalogId: "catalog-a",
+      catalogRevision: 1,
+      nextCompletionOrder: 1,
+      sessions: [{ sessionId: "legacy", cwd: "/repo", completionOrder: 1, completedAt: "2026-07-20T00:00:00.000Z" }],
+    });
+    const reload = async () => {
+      const reloaded = persistedStore(persistence, "unused-catalog", "2026-07-20T01:00:00.000Z");
+      await reloaded.load();
+      return reloaded;
+    };
+    const acknowledge = (target: SessionUnreadStore, throughCompletionOrder: number) => target.acknowledge(
+      "session-1",
+      { cwd: "/repo", catalogId: "catalog-a", throughCompletionOrder },
+    ).mutations;
+    const row = (sessionId: string, completionOrder: number) => (
+      { sessionId, cwd: "/repo", completionOrder, completedAt: "2026-07-20T01:00:00.000Z" }
+    );
+
+    let store = await reload();
+    // A row persisted before provenance existed has unknown origin and stays held.
+    complete(store, "legacy", "/repo", "entry-legacy-1");
+    complete(store, "legacy", "/repo", "entry-legacy-2");
+    expect(currentRow(store, "legacy")).toEqual(row("legacy", 3));
+
+    // A completion without a saved final reply, e.g. one ending on a tool result, holds nothing.
+    expect(complete(store, "session-1", "/repo")[0]?.event.unread).toEqual(row("session-1", 4));
+    await store.flush();
+    store = await reload();
+    complete(store, "session-1", "/repo", "entry-1");
+    expect(currentRow(store, "session-1")).toEqual({ ...row("session-1", 5), replyEntryId: "entry-1" });
+
+    // Completion then manual unread: the observed reply's order cannot clear the manual row.
+    expect(store.markUnread("session-1", "/repo")[0]?.event.unread).toEqual(row("session-1", 6));
+    expect(acknowledge(store, 5)).toEqual([]);
+    // Manual then completions: each replaces the row as before but stays held, also after reload.
+    complete(store, "session-1", "/repo", "entry-2");
+    await store.flush();
+    store = await reload();
+    complete(store, "session-1", "/repo", "entry-3");
+    expect(currentRow(store, "session-1")).toEqual(row("session-1", 8));
+
+    // An explicit read ends the hold.
+    expect(acknowledge(store, 8)).toHaveLength(1);
+    complete(store, "session-1", "/repo", "entry-4");
+    expect(currentRow(store, "session-1")).toEqual({ ...row("session-1", 9), replyEntryId: "entry-4" });
   });
 
   it("rejects stale acknowledgements from a reset catalog epoch", () => {
@@ -603,9 +654,13 @@ function persistedStore(
   });
 }
 
-function complete(store: SessionUnreadStore, sessionId: string, cwd: string): void {
+function complete(store: SessionUnreadStore, sessionId: string, cwd: string, replyEntryId?: string): SessionUnreadMutation[] {
   store.observeActivityState(sessionId, cwd, true);
-  store.observeActivityState(sessionId, cwd, false);
+  return store.observeActivityState(sessionId, cwd, false, replyEntryId);
+}
+
+function currentRow(store: SessionUnreadStore, sessionId: string): SessionUnreadSummary | undefined {
+  return store.catalogSnapshot().sessions.find((summary) => summary.sessionId === sessionId);
 }
 
 function currentOrder(store: SessionUnreadStore, sessionId: string, cwd: string): number {
