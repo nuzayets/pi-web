@@ -1,5 +1,7 @@
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { MachineClient } from "./machines/machineClient.js";
+import { MachineStore } from "./machines/machineStore.js";
 import type { PiWebConfigResponse, PiWebConfigValues } from "../shared/apiTypes.js";
 import { appTestContext, configFromMachineConfigWriteBody, fakeRemoteClient, fullPiWebConfig, piWebConfigResponse, registerAppTestHooks, selectedMachinePiWebConfig } from "./app.testSupport.js";
 
@@ -27,6 +29,24 @@ describe("buildApp machine routes", () => {
     expect(defaultIdentity.json()).toMatchObject({ name: "PI-WEB" });
     const defaultInstallation = await appTestContext.app.inject({ method: "GET", url: "/api/pi-web/identity" });
     expect(defaultInstallation.json()).toEqual({ name: "PI-WEB" });
+  });
+
+  it("lists without waiting for remote identity only when identity=cached is requested", async () => {
+    const pending: ((value: Awaited<ReturnType<MachineClient["requestJson"]>>) => void)[] = [];
+    const requestJson = vi.fn<MachineClient["requestJson"]>(() => new Promise((resolve) => { pending.push(resolve); }));
+    appTestContext.remoteClient = fakeRemoteClient({ requestJson });
+    await new MachineStore(join(appTestContext.tempDir, "machines.json")).add({ name: "", baseUrl: "https://remote.example.test" });
+
+    let freshSettled = false;
+    const fresh = appTestContext.app.inject({ method: "GET", url: "/api/machines" }).finally(() => { freshSettled = true; });
+    await vi.waitFor(() => { expect(pending).toHaveLength(1); });
+    const cached = await appTestContext.app.inject({ method: "GET", url: "/api/machines?identity=cached" });
+    const remote = cached.json<{ machines: { id: string }[] }>().machines[1];
+    expect(cached.json()).toEqual({ machines: [expect.objectContaining({ id: "local" }), expect.objectContaining({ kind: "remote", name: "PI-WEB" })], pendingIdentityMachineIds: [remote?.id] });
+    expect(freshSettled).toBe(false);
+    pending[0]?.({ statusCode: 200, headers: {}, body: { name: "Office" } });
+    expect((await fresh).json()).toEqual({ machines: [expect.objectContaining({ id: "local" }), expect.objectContaining({ kind: "remote", name: "Office", reportedName: "Office" })] });
+    expect(requestJson).toHaveBeenCalledTimes(1);
   });
 
   it("adds remote machines without exposing tokens", async () => {

@@ -360,13 +360,39 @@ describe("MachineController", () => {
     expect(runtime).not.toHaveBeenCalled();
   });
 
+  it("navigates from a cached listing and refreshes only its provisional identities afterwards", async () => {
+    const provisional = { ...remoteMachine, name: "PI-WEB" };
+    let state: AppState = initialAppState();
+    const setState = (patch: Partial<AppState>) => { state = { ...state, ...patch }; };
+    const listing = vi.spyOn(api, "machines").mockResolvedValue({ machines: [localMachine, provisional, addedMachine], pendingIdentityMachineIds: [provisional.id] });
+    vi.spyOn(api, "health").mockResolvedValue({ machineId: "local", ok: true, checkedAt: "2026-05-26T00:00:01.000Z", status: "online" });
+    vi.spyOn(api, "runtime").mockResolvedValue({ machineId: "local", ok: true, checkedAt: "2026-05-26T00:00:02.000Z" });
+    let resolveIdentity!: (machine: Machine) => void;
+    const identity = vi.spyOn(api, "machine").mockReturnValue(new Promise((done) => { resolveIdentity = done; }));
+    const controller = new MachineController(() => state, setState, vi.fn(), { loadProjects: vi.fn() });
+
+    expect(await controller.loadMachines()).toBe(true);
+    expect(state.machines).toEqual([localMachine, provisional, addedMachine]);
+    expect(state.selectedMachine).toEqual(localMachine);
+    expect(identity).not.toHaveBeenCalled();
+    await vi.waitFor(() => { expect(identity).toHaveBeenCalledExactlyOnceWith(provisional.id); });
+    resolveIdentity({ ...remoteMachine, name: "Lab", reportedName: "Lab", baseUrl: "http://stale.test" });
+    await vi.waitFor(() => { expect(state.machines).toEqual([localMachine, { ...remoteMachine, name: "Lab", reportedName: "Lab" }, addedMachine]); });
+    expect(state.selectedMachine).toEqual(localMachine);
+
+    listing.mockResolvedValue({ machines: [localMachine, remoteMachine], pendingIdentityMachineIds: [] });
+    await controller.loadMachines();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(identity).toHaveBeenCalledOnce();
+  });
+
   it("keeps the routed remote machine selected while its health is offline", async () => {
     let state: AppState = initialAppState();
     const setState = (patch: Partial<AppState>) => { state = { ...state, ...patch }; };
     const updateUrl = vi.fn();
     const projects = { loadProjects: vi.fn() };
 
-    vi.spyOn(api, "machines").mockResolvedValue([localMachine, remoteMachine]);
+    vi.spyOn(api, "machines").mockResolvedValue({ machines: [localMachine, remoteMachine], pendingIdentityMachineIds: [] });
     vi.spyOn(api, "health").mockImplementation((machineId: string) => Promise.resolve(
       machineId === remoteMachine.id
         ? offlineHealth
@@ -389,7 +415,7 @@ describe("MachineController", () => {
     const updateUrl = vi.fn();
     const projects = { loadProjects: vi.fn() };
 
-    vi.spyOn(api, "machines").mockResolvedValue([localMachine, remoteMachine]);
+    vi.spyOn(api, "machines").mockResolvedValue({ machines: [localMachine, remoteMachine], pendingIdentityMachineIds: [] });
     vi.spyOn(api, "health").mockRejectedValue(new Error("Internal Server Error"));
 
     const controller = new MachineController(() => state, setState, updateUrl, projects);
@@ -437,7 +463,7 @@ describe("MachineController", () => {
     };
     const setState = (patch: Partial<AppState>) => { state = { ...state, ...patch }; };
 
-    vi.spyOn(api, "machines").mockResolvedValue([localMachine]);
+    vi.spyOn(api, "machines").mockResolvedValue({ machines: [localMachine], pendingIdentityMachineIds: [] });
     vi.spyOn(api, "health").mockResolvedValue({ machineId: "local", ok: true, checkedAt: "2026-05-26T00:00:01.000Z", status: "online" });
     vi.spyOn(api, "runtime").mockResolvedValue({ machineId: "local", ok: true, checkedAt: "2026-05-26T00:00:02.000Z" });
 
@@ -457,7 +483,7 @@ describe("MachineController", () => {
     };
     const setState = (patch: Partial<AppState>) => { state = { ...state, ...patch }; };
 
-    vi.spyOn(api, "machines").mockResolvedValue([localMachine]);
+    vi.spyOn(api, "machines").mockResolvedValue({ machines: [localMachine], pendingIdentityMachineIds: [] });
     vi.spyOn(api, "health").mockResolvedValue({ machineId: localMachine.id, ok: true, checkedAt: "2026-05-26T00:00:01.000Z", status: "online" });
     vi.spyOn(api, "runtime").mockResolvedValue({ machineId: localMachine.id, ok: true, checkedAt: "2026-05-26T00:00:02.000Z" });
 
@@ -474,7 +500,7 @@ describe("MachineController", () => {
     const updateUrl = vi.fn();
     const projects = { loadProjects: vi.fn() };
 
-    vi.spyOn(api, "machines").mockResolvedValue([localMachine]);
+    vi.spyOn(api, "machines").mockResolvedValue({ machines: [localMachine], pendingIdentityMachineIds: [] });
     vi.spyOn(api, "health").mockResolvedValue({ machineId: "local", ok: true, checkedAt: "2026-05-26T00:00:01.000Z", status: "online" });
 
     const controller = new MachineController(() => state, setState, updateUrl, projects);

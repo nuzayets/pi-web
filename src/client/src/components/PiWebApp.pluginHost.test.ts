@@ -1502,7 +1502,7 @@ describe("PiWebApp plugin host", () => {
     await markPluginLoadingReady(app);
     vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
       const url = input instanceof Request ? input.url : String(input);
-      if (url.endsWith("api/machines")) {
+      if (url.endsWith("api/machines?identity=cached")) {
         if (scenario === "machine load failure") return Promise.reject(new Error("machines offline"));
         return Promise.resolve(new Response(JSON.stringify({ machines: [{ id: "local", name: "Local", kind: "local", createdAt: "now", updatedAt: "now" }] }), { headers: { "content-type": "application/json" } }));
       }
@@ -1536,7 +1536,7 @@ describe("PiWebApp plugin host", () => {
     const json = (body: unknown, status = 200) => Promise.resolve(new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } }));
     vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
       const url = input instanceof Request ? input.url : String(input);
-      if (url.endsWith("api/machines")) return json({ machines: [{ id: "local", name: "Local", kind: "local", createdAt: "now", updatedAt: "now" }] });
+      if (url.endsWith("api/machines?identity=cached")) return json({ machines: [{ id: "local", name: "Local", kind: "local", createdAt: "now", updatedAt: "now" }] });
       if (url.endsWith("api/machines/local/sessions/s1/location")) return json(location.body, location.status);
       if (url.endsWith("api/machines/local/projects")) return json([]);
       return Promise.reject(new Error(`unexpected request ${url}`));

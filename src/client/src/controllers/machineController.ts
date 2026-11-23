@@ -33,7 +33,7 @@ export class MachineController {
   async loadMachines(routeMachineId?: string): Promise<boolean> {
     this.setState({ error: "", isLoadingMachines: true });
     try {
-      const machines = await api.machines();
+      const { machines, pendingIdentityMachineIds } = await api.machines();
       const selectedMachine = await this.selectInitialMachine(machines, routeMachineId);
       const machineIds = new Set(machines.map((machine) => machine.id));
       for (const error of Object.values(this.getState().browserErrors)) {
@@ -47,6 +47,11 @@ export class MachineController {
       });
       void this.refreshMachineHealthFor(machines);
       void this.refreshMachineRuntimeFor(machines);
+      // Provisional names never gate navigation. On the common startup route this macrotask
+      // runs after the caller has requested the selected machine's projects.
+      if (pendingIdentityMachineIds.length > 0) {
+        setTimeout(() => { for (const machineId of pendingIdentityMachineIds) void this.refreshMachineIdentity(machineId); }, 0);
+      }
       return true;
     } catch (error) {
       this.setState({ error: String(error) });

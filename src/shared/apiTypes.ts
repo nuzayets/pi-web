@@ -106,6 +106,12 @@ export interface Machine {
   statusMessage?: string;
 }
 
+export interface MachinesResponse {
+  machines: Machine[];
+  /** Only with `identity=cached`: machines whose names are provisional until their discovery settles. */
+  pendingIdentityMachineIds?: string[];
+}
+
 export interface MachineHealth {
   machineId: string;
   ok: boolean;

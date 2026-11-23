@@ -74,6 +74,40 @@ describe("MachineService", () => {
     expect(stored[0]?.name).toBe("");
   });
 
+  it("lists cached identities without waiting for a paused peer and refreshes them in the background", async () => {
+    let now = 0;
+    const pending: ((value: Awaited<ReturnType<MachineClient["requestJson"]>>) => void)[] = [];
+    const requestJson = vi.fn<MachineClient["requestJson"]>(() => new Promise((resolve) => { pending.push(resolve); }));
+    const named = new MachineService(new MachineStore(storePath), {
+      localName: () => undefined,
+      now: () => new Date(now),
+      nameCacheTtlMs: 100,
+      remoteClientFactory: () => fakeRemoteClient({ requestJson }),
+    });
+    const store = new MachineStore(storePath);
+    const follows = await store.add({ name: "", baseUrl: "https://paused.example.test" });
+    await store.add({ name: "Override", baseUrl: "https://named.example.test" });
+    const cachedListing = async () => {
+      const { machines, pendingIdentityMachineIds } = await named.listWithCachedIdentity();
+      return { names: machines.filter((machine) => machine.kind === "remote").map((machine) => machine.name), pendingIdentityMachineIds };
+    };
+
+    expect(await cachedListing()).toEqual({ names: ["PI-WEB", "Override"], pendingIdentityMachineIds: [follows.id] });
+    expect((await named.listWithCachedIdentity()).machines[1]).not.toHaveProperty("reportedName");
+    await vi.waitFor(() => { expect(pending).toHaveLength(1); });
+    pending[0]?.({ statusCode: 200, headers: {}, body: { name: "Reported" } });
+    expect(await named.get(follows.id)).toMatchObject({ name: "Reported" });
+    expect(await cachedListing()).toEqual({ names: ["Reported", "Override"], pendingIdentityMachineIds: [] });
+
+    now = 101;
+    expect(await cachedListing()).toEqual({ names: ["Reported", "Override"], pendingIdentityMachineIds: [follows.id] });
+    await vi.waitFor(() => { expect(pending).toHaveLength(2); });
+    pending[1]?.({ statusCode: 200, headers: {}, body: { name: "Renamed" } });
+    expect(await named.get(follows.id)).toMatchObject({ name: "Renamed", reportedName: "Renamed" });
+    expect(await cachedListing()).toEqual({ names: ["Renamed", "Override"], pendingIdentityMachineIds: [] });
+    expect(requestJson).toHaveBeenCalledTimes(2);
+  });
+
   it.each([
     { statusCode: 404, body: {} },
     { statusCode: 401, body: {} },

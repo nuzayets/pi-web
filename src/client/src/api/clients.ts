@@ -102,7 +102,7 @@ export const piWebApi = {
 };
 
 export const machinesApi = {
-  machines: () => request("api/machines", parseMachinesResponse),
+  machines: () => request("api/machines?identity=cached", parseMachinesResponse),
   machine: (machineId: string) => request(`api/machines/${encodeURIComponent(machineId)}`, parseMachine),
   addMachine: (input: { name: string; baseUrl: string; token?: string }) => request("api/machines", parseMachine, { method: "POST", body: JSON.stringify(input) }),
   updateMachine: (machineId: string, input: { name: string }) => request(`api/machines/${encodeURIComponent(machineId)}`, parseMachine, { method: "PATCH", body: JSON.stringify(input) }),

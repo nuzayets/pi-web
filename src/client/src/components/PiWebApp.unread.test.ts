@@ -225,6 +225,39 @@ describe("PiWebApp session unread wiring", () => {
     expect(fetchMock.mock.calls[0]?.[0]).toBe("https://pi.example.test/api/machines/local/sessions/unread");
   });
 
+  it("reads unread snapshots for machine list changes but not for a pending machine's label refresh", async () => {
+    const pending: ((response: Response) => void)[] = [];
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      void input;
+      return new Promise<Response>((resolve) => { pending.push(resolve); });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const app = createApp();
+    enableUnread(app);
+    // Remote activity sockets are unrelated to the unread snapshot reads under test.
+    Reflect.set(app, "syncMachineActivitySubscriptions", () => undefined);
+    const localMachine = machine("local");
+    const remote = machine("remote");
+    setAppState(app, { ...initialAppState(), selectedMachine: localMachine });
+
+    setState(app, { machines: [localMachine, remote] });
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "https://pi.example.test/api/machines/local/sessions/unread",
+      "https://pi.example.test/api/machines/remote/sessions/unread",
+    ]);
+    setState(app, { machines: [localMachine, { ...remote, name: "Lab" }] });
+    for (const resolve of pending.splice(0)) {
+      resolve(new Response(JSON.stringify({ catalogId: "catalog-a", catalogRevision: 1, sessions: [] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    }
+    await vi.waitFor(() => { expect(unreadProjection(app, "remote")).toBeDefined(); });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    setState(app, { machines: [localMachine, { ...remote, name: "Lab" }, machine("added")] });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[2]?.[0]).toBe("https://pi.example.test/api/machines/added/sessions/unread");
+  });
+
   it("drops a deferred unread snapshot on disconnect without acknowledging it", async () => {
     const response = deferred<Response>();
     const fetchMock = vi.fn((input: RequestInfo | URL) => {
@@ -480,6 +513,14 @@ function refreshUnread(app: PiWebApp, machineId: string): Promise<void> {
   const refresh: unknown = Reflect.get(controller, "refresh");
   if (!isRefreshUnread(refresh)) throw new Error("PiWebApp unread refresh is not callable");
   return refresh.call(controller, machineId);
+}
+
+function unreadProjection(app: PiWebApp, machineId: string): unknown {
+  const controller: unknown = Reflect.get(app, "sessionUnread");
+  if (typeof controller !== "object" || controller === null) throw new Error("PiWebApp unread controller is unavailable");
+  const projection: unknown = Reflect.get(controller, "projection");
+  if (typeof projection !== "function") throw new Error("PiWebApp unread projection is not callable");
+  return Reflect.apply(projection, controller, [machineId]);
 }
 
 function mobileNavigationTab(app: PiWebApp): AppMobileMainTab {

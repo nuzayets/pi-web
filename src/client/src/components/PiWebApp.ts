@@ -4814,7 +4814,9 @@ function browserErrorContextForRoute(
 }
 
 function machineUnreadInputsChanged(previous: AppState, next: AppState): boolean {
-  return previous.machines !== next.machines;
+  // Unread sync uses only machine IDs; a label refresh must not queue another catalog read.
+  return previous.machines.length !== next.machines.length
+    || previous.machines.some((machine, index) => machine.id !== next.machines[index]?.id);
 }
 
 function machineActivitySubscriptionInputsChanged(previous: AppState, next: AppState): boolean {

@@ -1,4 +1,4 @@
-import type { Machine, MachineHealth, MachineRuntime, PiWebComponentStatus, PiWebDeprecatedAgentInput, PiWebRuntimeComponent, PiWebRuntimeResponse, PiWebStatusResponse } from "../../shared/apiTypes.js";
+import type { Machine, MachineHealth, MachinesResponse, MachineRuntime, PiWebComponentStatus, PiWebDeprecatedAgentInput, PiWebRuntimeComponent, PiWebRuntimeResponse, PiWebStatusResponse } from "../../shared/apiTypes.js";
 import { parsePiWebRuntimeResponse } from "../../shared/piWebStatusParsing.js";
 import { installationDisplayName, requireInstallationName } from "../../shared/installationName.js";
 import { getPiWebRuntime } from "../piWebStatus.js";
@@ -44,10 +44,27 @@ export class MachineService {
 
   constructor(private readonly store = new MachineStore(), private readonly deps: MachineServiceDependencies = {}) {}
 
+  /** Waits for due name discovery, so one unresponsive peer delays the whole list until it times out. */
   async list(): Promise<Machine[]> {
     const stored = await this.store.list();
     const remotes = await Promise.all(stored.map((machine) => this.resolveRemoteMachine(machine)));
     return [await this.localMachine(), ...remotes];
+  }
+
+  /**
+   * Never waits for a peer: returns each remote's last known or default name and
+   * starts or joins its due discovery in the background. Names of the returned
+   * pending machines are provisional; `get` returns them once discovery settles.
+   */
+  async listWithCachedIdentity(): Promise<Required<MachinesResponse>> {
+    const stored = await this.store.list();
+    const pendingIdentityMachineIds: string[] = [];
+    const remotes = stored.map((machine) => {
+      // discoverName never rejects: failures are reported and retain the last identity.
+      if (machine.name.trim() === "" && this.discoverName(machine) !== undefined) pendingIdentityMachineIds.push(machine.id);
+      return publicRemoteMachine(machine, this.nameCache.get(machine.id)?.reportedName);
+    });
+    return { machines: [await this.localMachine(), ...remotes], pendingIdentityMachineIds };
   }
 
   async get(id: string): Promise<Machine | undefined> {

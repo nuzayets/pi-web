@@ -1,8 +1,12 @@
 import type { FastifyInstance } from "fastify";
+import type { MachinesResponse } from "../../shared/apiTypes.js";
 import type { MachineService, CreateMachineInput, UpdateMachineInput } from "./machineService.js";
 
 export function registerMachineRoutes(app: FastifyInstance, machines: MachineService): void {
-  app.get("/api/machines", async () => ({ machines: await machines.list() }));
+  // Opt-in `identity=cached` lists without waiting for any peer; servers predating it ignore the query.
+  app.get<{ Querystring: { identity?: string } }>("/api/machines", async (request): Promise<MachinesResponse> => request.query.identity === "cached"
+    ? machines.listWithCachedIdentity()
+    : { machines: await machines.list() });
 
   app.post<{ Body: CreateMachineInput }>("/api/machines", async (request, reply) => {
     try {
