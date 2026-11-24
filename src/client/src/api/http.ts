@@ -21,10 +21,17 @@ export class NetworkRequestError extends Error {
 export interface RequestOptions extends RequestInit {
   /** Opt-in transport deadline, including response body reads. No retries. */
   timeoutMs?: number;
+  /** Opt-in revalidation of the last ETag-bearing body this slot holds for the same URL. */
+  revalidate?: RevalidationSlot;
+}
+
+/** One URL's last successful response text and ETag, replaced by each later successful read through the slot. */
+export interface RevalidationSlot {
+  body?: { url: string; etag: string; text: string };
 }
 
 export async function request<T>(url: string, parse: (value: unknown) => T, options?: RequestOptions): Promise<T> {
-  const { timeoutMs, ...init } = options ?? {};
+  const { timeoutMs, revalidate, ...init } = options ?? {};
   const controller = timeoutMs === undefined ? undefined : new AbortController();
   const signal = controller?.signal ?? init.signal ?? undefined;
   const abort = () => controller?.abort(init.signal?.reason);
@@ -33,6 +40,9 @@ export async function request<T>(url: string, parse: (value: unknown) => T, opti
   const headers = new Headers(init.headers);
   if (init.body !== undefined && !headers.has("content-type")) headers.set("content-type", "application/json");
   const requestUrl = resolveAppUrl(url);
+  // Captured before sending: a 304 validates this body, even if a concurrent read replaces the slot.
+  const validated = revalidate?.body?.url === requestUrl ? revalidate.body : undefined;
+  if (validated !== undefined) headers.set("if-none-match", validated.etag);
   let body: unknown;
   try {
     if (controller !== undefined && timeoutMs !== undefined) {
@@ -44,10 +54,30 @@ export async function request<T>(url: string, parse: (value: unknown) => T, opti
     }
     signal?.throwIfAborted();
     const transport = (async () => {
-      const response = await fetch(requestUrl, { ...init, headers, ...(signal === undefined ? {} : { signal }) });
+      const send = (sentHeaders: Headers) => fetch(requestUrl, { ...init, headers: sentHeaders, ...(signal === undefined ? {} : { signal }) });
+      let response = await send(headers);
+      if (validated !== undefined && response.status === 304) {
+        if (opaqueTag(response.headers.get("etag")) === opaqueTag(validated.etag)) {
+          // The full response would have been exactly the validated bytes.
+          const body: unknown = JSON.parse(validated.text);
+          return body;
+        }
+        // A 304 for another validator cannot be used; read the full response once.
+        const unconditional = new Headers(headers);
+        unconditional.delete("if-none-match");
+        response = await send(unconditional);
+      }
       if (!response.ok) {
         const errorBody: unknown = await response.json().catch((): unknown => ({}));
         throw new HttpRequestError(errorMessage(errorBody) ?? response.statusText, response.status);
+      }
+      if (revalidate !== undefined) {
+        const text = await response.text();
+        const body: unknown = JSON.parse(text);
+        const etag = response.headers.get("etag");
+        if (etag === null) delete revalidate.body;
+        else revalidate.body = { url: requestUrl, etag, text };
+        return body;
       }
       const body: unknown = await response.json();
       return body;
@@ -78,6 +108,11 @@ export async function request<T>(url: string, parse: (value: unknown) => T, opti
   }
   // Parser TypeErrors are not transport failures and must never become retryable.
   return parse(body);
+}
+
+/** ETags compare weakly: the W/ prefix does not change which representation a tag names. */
+function opaqueTag(etag: string | null): string | undefined {
+  return etag?.replace(/^W\//, "");
 }
 
 function errorMessage(value: unknown): string | undefined {

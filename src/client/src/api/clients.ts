@@ -2,7 +2,7 @@ import { parseSessionDefaults } from "../../../shared/sessionDefaults";
 import type { SessionDefaultsUpdate } from "../../../shared/apiTypes";
 import type { AskUserSubmission, DeleteWorkspaceFileResponse, ExtensionDialogAnswer, FileSuggestion, MoveWorkspaceFileOptions, PiPackageInstallRequest, PiPackageRemoveRequest, PiPackageScope, PiPackageUpdateRequest, PiWebConfigValues, PromptAttachment, ServerNoticeDismissRequest, SessionBulkMutationRef, SessionCleanupRequest, SessionModelScopeMode, SessionNotificationDismissThrough, SessionQueueMessageMutation, SessionRef, SessionTreeForkRequest, SessionTreeForkResult, SessionTreeNavigateRequest, SessionUnreadAcknowledgeRequest, WorkspaceRemovalRequest, WriteWorkspaceFileOptions } from "../../../shared/apiTypes";
 import { resolveAppUrl } from "../appUrl";
-import { request } from "./http";
+import { request, type RevalidationSlot } from "./http";
 import {
   arrayOf,
   parseAborted,
@@ -233,6 +233,9 @@ export const workspacesApi = {
   },
 };
 
+// Reconnects and periodic refreshes reread the selected session's unchanged tail.
+const transcriptSnapshotRevalidation: RevalidationSlot = {};
+
 export const sessionsApi = {
   sessions: (cwd: string, machineId = "local", options?: { signal?: AbortSignal }) => request(
     `${machinePrefix(machineId)}/sessions?cwd=${encodeURIComponent(cwd)}`,
@@ -267,7 +270,11 @@ export const sessionsApi = {
   streamSnapshot: (session: SessionRef, machineId = "local") => request(streamSnapshotPath(session, machineId), parseSessionStreamSnapshot),
   transcriptSnapshot: (session: SessionRef, options?: { limit?: number; signal?: AbortSignal; timeoutMs?: number }, machineId = "local") => request(
     transcriptSnapshotPath(session, options, machineId), parseSessionTranscriptSnapshot,
-    { ...(options?.signal === undefined ? {} : { signal: options.signal }), ...(options?.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }) },
+    {
+      revalidate: transcriptSnapshotRevalidation,
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
+      ...(options?.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+    },
   ),
   mutateQueuedMessage: (session: SessionRef, mutation: SessionQueueMessageMutation, machineId = "local") => request(sessionPath(session, "queue/message", machineId), parseSessionStatus, { method: "POST", body: sessionBody(session, { ...mutation }) }),
   clearQueue: (session: SessionRef, machineId = "local") => request(sessionPath(session, "queue/clear", machineId), parseSessionStatus, { method: "POST", body: sessionBody(session) }),

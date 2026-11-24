@@ -191,6 +191,39 @@ describe("machine-scoped session proxy routes", () => {
     expect(daemon.requests).toEqual([{ method: "GET", path: "/sessions/session-1/transcript-snapshot?cwd=%2Frepo&limit=25", body: undefined }]);
   });
 
+  it.each(["/api", "/api/machines/local"])("revalidates a transcript snapshot through %s only while the daemon body is byte-identical", async (prefix) => {
+    const snapshot = { page: { start: 0, total: 1, messages: [{ role: "user", content: "hello" }] }, status: { sessionId: "session-1" }, seq: 12, partial: null };
+    const changed = { ...snapshot, seq: 13 };
+    for (const body of [snapshot, snapshot, snapshot, changed]) {
+      daemon.respondWith({ statusCode: 200, headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    }
+    const url = `${prefix}/sessions/session-1/transcript-snapshot?cwd=%2Frepo&limit=25`;
+
+    const full = await app.inject({ method: "GET", url });
+    const etag = full.headers.etag;
+    if (typeof etag !== "string") throw new Error("Expected an ETag");
+    const unchanged = await app.inject({ method: "GET", url, headers: { "if-none-match": etag } });
+    const listed = await app.inject({ method: "GET", url, headers: { "if-none-match": `"other", ${etag.slice(2)}` } });
+    const replaced = await app.inject({ method: "GET", url, headers: { "if-none-match": etag } });
+
+    expect(full.statusCode).toBe(200);
+    expect(full.json()).toEqual(snapshot);
+    expect(etag).toMatch(/^W\/"[\w-]{43}"$/);
+    for (const response of [full, unchanged, listed]) {
+      expect(response.headers["cache-control"]).toBe("no-store");
+      expect(response.headers.vary).toBe("accept-encoding");
+    }
+    for (const response of [unchanged, listed]) {
+      expect(response.statusCode).toBe(304);
+      expect(response.body).toBe("");
+      expect(response.headers.etag).toBe(etag);
+    }
+    expect(replaced.statusCode).toBe(200);
+    expect(replaced.json()).toEqual(changed);
+    expect(replaced.headers.etag).not.toBe(etag);
+    expect(daemon.requests).toHaveLength(4);
+  });
+
   it.each(["/api", "/api/machines/local"])("preserves binary image bytes and cache headers through %s", async (prefix) => {
     const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0xff, 0x00, 0xc3, 0x28]);
     daemon.respondWith({

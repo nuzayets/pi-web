@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { isObservedDaemonBodyError, logDaemonProxyFailure, logDaemonRequestFailure, logInvalidDaemonResponse, observeDaemonBody } from "./daemonProxyDiagnostics.js";
 import type { ReportWebSocketProxyFailure, WebSocketProxyFailure } from "../webSocketBridge.js";
@@ -118,6 +119,30 @@ export function registerSessionProxyRoutes(
     }
   });
 
+  // The validator hashes the exact unencoded daemon body, so a 304 means the full
+  // response would repeat, byte for byte, the body the browser revalidated. It is
+  // weak only because content coding may vary. no-store keeps transcripts out of
+  // HTTP caches, which would otherwise revalidate on their own.
+  app.get(`${prefix}/sessions/:sessionId/transcript-snapshot`, async (request, reply) => {
+    try {
+      const upstream = await daemon.request("GET", stripPrefix(request.url, prefix));
+      reply.code(upstream.statusCode);
+      const contentType = upstream.headers["content-type"];
+      if (contentType !== undefined && contentType !== "") reply.header("content-type", contentType);
+      if (upstream.statusCode === 200) {
+        const opaqueTag = `"${createHash("sha256").update(upstream.body).digest("base64url")}"`;
+        reply.header("etag", `W/${opaqueTag}`).header("cache-control", "no-store").header("vary", "accept-encoding");
+        if (ifNoneMatchIncludes(request.headers["if-none-match"], opaqueTag)) return await reply.code(304).send();
+      }
+      return upstream.body !== "" ? parseJson(upstream.body) : undefined;
+    } catch (error) {
+      if (error instanceof SyntaxError) logInvalidDaemonResponse(request);
+      else logDaemonRequestFailure(request, error);
+      requestFailed(reply, error);
+      return undefined;
+    }
+  });
+
   app.get(`${prefix}/sessiond/health`, (_request, reply) => proxy({ method: "GET", url: `${prefix}/health` }, reply));
   app.get(`${prefix}/sessiond/runtime`, (_request, reply) => proxy({ method: "GET", url: `${prefix}/runtime` }, reply));
 
@@ -168,6 +193,14 @@ function stripPrefix(url: string, prefix: string): string {
   const query = url.slice(path.length);
   const stripped = path.startsWith(prefix) ? `${path.slice(prefix.length)}${query}` : url;
   return stripped === "" ? "/" : stripped;
+}
+
+/** If-None-Match uses weak comparison: only the opaque tag, without any W/ prefix, must match. */
+function ifNoneMatchIncludes(header: string | undefined, opaqueTag: string): boolean {
+  return header?.split(",").some((candidate) => {
+    const tag = candidate.trim();
+    return tag === "*" || tag.replace(/^W\//, "") === opaqueTag;
+  }) ?? false;
 }
 
 function parseJson(text: string): unknown {

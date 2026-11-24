@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { HttpRequestError, NetworkRequestError, request } from "./http";
+import { HttpRequestError, NetworkRequestError, request, type RevalidationSlot } from "./http";
 
 const fetchMock = vi.fn<typeof fetch>();
 const transportStages: ("fetch" | "body")[] = ["fetch", "body"];
@@ -15,6 +15,10 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
+
+function ifNoneMatch(call: number): string | null {
+  return new Headers(fetchMock.mock.calls[call]?.[1]?.headers).get("if-none-match");
+}
 
 function rejectTransport(stage: "fetch" | "body", error: unknown): void {
   if (stage === "fetch") {
@@ -196,6 +200,41 @@ describe("request", () => {
     await expect(pending).rejects.toBeInstanceOf(HttpRequestError);
     await expect(pending).rejects.toMatchObject({ status: 503, message: "Service Unavailable" });
     expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("reuses exactly the validated body only for a 304 naming its validator, and forgets it after a 200 without an ETag", async () => {
+    const slot: RevalidationSlot = {};
+    fetchMock
+      .mockResolvedValueOnce(new Response('{"seq":1}', { headers: { etag: 'W/"a"' } }))
+      .mockResolvedValueOnce(new Response(null, { status: 304, headers: { etag: 'W/"a"' } }))
+      .mockResolvedValueOnce(new Response(null, { status: 304, headers: { etag: 'W/"b"' } }))
+      .mockResolvedValueOnce(new Response('{"seq":2}'))
+      .mockResolvedValueOnce(new Response('{"seq":3}'));
+    const read = () => request("api/read", (body) => body, { revalidate: slot });
+
+    await expect(read()).resolves.toEqual({ seq: 1 });
+    await expect(read()).resolves.toEqual({ seq: 1 });
+    await expect(read()).resolves.toEqual({ seq: 2 });
+    await expect(read()).resolves.toEqual({ seq: 3 });
+
+    expect([0, 1, 2, 3, 4].map(ifNoneMatch)).toEqual([null, 'W/"a"', 'W/"a"', null, null]);
+  });
+
+  it("revalidates only the same URL, against the body held when the read started", async () => {
+    const url = "https://pi.example.test/api/read";
+    const slot: RevalidationSlot = { body: { url, etag: '"a"', text: '{"seq":1}' } };
+    let respond: (response: Response) => void = () => undefined;
+    fetchMock
+      .mockReturnValueOnce(new Promise((resolve) => { respond = resolve; }))
+      .mockResolvedValueOnce(new Response('{"other":true}'));
+
+    const pending = request("api/read", (body) => body, { revalidate: slot });
+    slot.body = { url, etag: '"b"', text: '{"seq":2}' };
+    respond(new Response(null, { status: 304, headers: { etag: '"a"' } }));
+
+    await expect(pending).resolves.toEqual({ seq: 1 });
+    await expect(request("api/other", (body) => body, { revalidate: slot })).resolves.toEqual({ other: true });
+    expect([0, 1].map(ifNoneMatch)).toEqual(['"a"', null]);
   });
 
   it.each(["GET", "POST", "PUT", "DELETE"])("never globally retries %s requests", async (method) => {
