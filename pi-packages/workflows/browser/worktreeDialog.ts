@@ -110,6 +110,18 @@ export function openWorktreeDialog(context: DialogContext, peer: PluginPeer, loc
     void (async () => {
       try {
         const result = object(await request("dispatch", { base: base.value.trim(), description: description.value.trim() }, { signal: controller.signal }));
+        const rejection = rejectionMessage(result);
+        if (rejection !== undefined) {
+          if (controller.signal.aborted) return;
+          // The server stopped before starting a session, so the unchanged draft may be corrected and sent again.
+          base.disabled = false;
+          description.disabled = false;
+          submit.disabled = false;
+          setStatus(() => t("rejected"));
+          showError(() => rejection);
+          base.focus();
+          return;
+        }
         dispatched = { workspaceId: text(result["workspaceId"]), sessionId: text(result["sessionId"]) };
         if (controller.signal.aborted) return;
         setStatus(() => t("opening"));
@@ -164,6 +176,12 @@ function isObject(value: JsonValue): value is JsonObject {
 function object(value: JsonValue): JsonObject {
   if (!isObject(value)) throw new ResponseError("invalidResponse");
   return value;
+}
+/** Only an exact `{ rejected }` result is a definite rejection; anything else stays uncertain. */
+function rejectionMessage(result: JsonObject): string | undefined {
+  if (!Object.hasOwn(result, "rejected")) return undefined;
+  if (Object.keys(result).length !== 1) throw new ResponseError("invalidResponse");
+  return text(result["rejected"]);
 }
 function text(value: JsonValue | undefined): string {
   if (typeof value !== "string" || value === "") throw new ResponseError("invalidResponse");

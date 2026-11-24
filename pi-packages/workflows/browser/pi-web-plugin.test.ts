@@ -192,6 +192,58 @@ describe("Workflows worktree dialog", () => {
     expect(target.request).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps the draft editable after a definite rejection and dispatches the corrected retry", async () => {
+    const request = vi.fn<(operation: string, input: JsonValue, options?: PluginPeerRequestOptions) => Promise<JsonValue>>()
+      .mockResolvedValueOnce(prepared)
+      .mockResolvedValueOnce({ rejected: "Git command failed (128): fatal: Needed a single revision" })
+      .mockResolvedValueOnce({ workspaceId: "main-tree", sessionId: "fresh-session" });
+    const target = setup(request);
+    await open(target);
+    const base = control("#base", HTMLInputElement);
+    const description = control("#description", HTMLTextAreaElement);
+    base.value = "missing-branch";
+    description.value = "My long typed draft";
+    submit();
+    await vi.waitFor(() => { expect(base.disabled).toBe(false); });
+    expect(control("#status", Element).textContent).toBe("No conversation was started. Correct the details and try again.");
+    expect(control("#error", HTMLElement).hidden).toBe(false);
+    expect(control("#error", Element).textContent).toBe("Git command failed (128): fatal: Needed a single revision");
+    expect(description.disabled).toBe(false);
+    expect(control("button[type=submit]", HTMLButtonElement).disabled).toBe(false);
+    expect(control("#cancel", Element).textContent).toBe("Cancel");
+    expect(base.value).toBe("missing-branch");
+    expect(description.value).toBe("My long typed draft");
+    expect(root().activeElement).toBe(base);
+    expect(target.context.navigate).not.toHaveBeenCalled();
+    base.value = "main";
+    submit();
+    await vi.waitFor(() => { expect(target.context.navigate).toHaveBeenCalledExactlyOnceWith({ machineId: "remote", projectId: "project", workspaceId: "main-tree", sessionId: "fresh-session", view: "chat" }); });
+    expect(request.mock.calls.map(([operation, input]) => [operation, input])).toEqual([
+      ["prepare", null],
+      ["dispatch", { base: "missing-branch", description: "My long typed draft" }],
+      ["dispatch", { base: "main", description: "My long typed draft" }],
+    ]);
+    expect(document.body.children).toHaveLength(0);
+  });
+
+  it.each([
+    { rejected: "Invalid base", sessionId: "fresh-session" }, { rejected: "Invalid base", workspaceId: "main-tree" },
+    { rejected: "" }, { rejected: 1 }, { rejected: null },
+  ])("keeps a malformed or ambiguous rejection uncertain and locked: %j", async (result) => {
+    const target = setup(vi.fn((operation) => Promise.resolve(operation === "prepare" ? prepared : result)));
+    await open(target);
+    control("#description", HTMLTextAreaElement).value = "Fix login";
+    submit();
+    await vi.waitFor(() => { expect(control("#cancel", Element).textContent).toBe("Close"); });
+    expect(control("#status", Element).textContent).toBe("Dispatch could not be confirmed.");
+    expect(control("#error", Element).textContent).toBe("Invalid response from Workflows. Check Sessions before trying again; a conversation may already have started.");
+    expect(control("#base", HTMLInputElement).disabled).toBe(true);
+    expect(control("#description", HTMLTextAreaElement).disabled).toBe(true);
+    expect(control("button[type=submit]", HTMLButtonElement).disabled).toBe(true);
+    submit();
+    expect(target.request).toHaveBeenCalledTimes(2);
+  });
+
   it("reports the existing session when navigation fails, without dispatching again", async () => {
     const target = setup();
     target.context.navigate.mockRejectedValue(new Error("Navigation failed"));

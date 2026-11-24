@@ -33,7 +33,10 @@ const plugin: PiWebServerPluginV5 = {
         async request({ scope, operation, input, signal }) {
           if (scope.kind !== "project") throw new Error("Workflows requires project scope");
           if (operation !== "prepare" && operation !== "dispatch") throw new Error("Unknown Workflows operation");
-          const details = operation === "dispatch" ? dispatchInput(input) : undefined;
+          let details: { base: string; description: string } | undefined;
+          if (operation === "dispatch") {
+            try { details = dispatchInput(input); } catch (error) { return rejected(error); }
+          }
           if (catalog === undefined || sessions === undefined) throw new Error("Workflows has not started");
           // Always discover current authority, including when dispatch follows prepare.
           const workspaces = await catalog.workspaces.list(scope.project.id, { signal });
@@ -43,7 +46,7 @@ const plugin: PiWebServerPluginV5 = {
           const mains = workspaces.filter((workspace) => workspace.isMain);
           const main = mains[0];
           if (mains.length !== 1 || main === undefined) throw new Error("Project must have exactly one main workspace");
-          const git = (args: readonly string[]) => runGit(context, main.path, args, signal);
+          const git = (args: readonly string[], rejectOnExit = false) => runGit(context, main.path, args, signal, rejectOnExit);
           if ((await git(["rev-parse", "--is-inside-work-tree"])).trim() !== "true"
             || (await git(["rev-parse", "--is-bare-repository"])).trim() !== "false") {
             throw new Error("Main workspace must be a non-bare Git worktree");
@@ -56,7 +59,9 @@ const plugin: PiWebServerPluginV5 = {
             if (current === "") throw new Error("Git returned an empty current branch");
             return { workspaceId: main.id, workspacePath: main.path, branches, defaultBase: current };
           }
-          await git(["rev-parse", "--verify", "--end-of-options", `${details.base}^{commit}`]);
+          try {
+            await git(["rev-parse", "--verify", "--end-of-options", `${details.base}^{commit}`], true);
+          } catch (error) { return rejected(error); }
           signal.throwIfAborted();
           const run = await sessions.run({
             projectId: scope.project.id,
@@ -84,6 +89,15 @@ const plugin: PiWebServerPluginV5 = {
 
 export default plugin;
 
+/** A dispatch check failed before sessions.run, so no session was started. */
+class DispatchRejection extends Error {}
+
+/** Reports a pre-start rejection as a result the dialog may correct and retry; other failures still throw. */
+function rejected(error: unknown): JsonValue {
+  if (error instanceof DispatchRejection) return { rejected: error.message };
+  throw error;
+}
+
 function dispatchInput(input: JsonValue): { base: string; description: string } {
   if (typeof input !== "object" || input === null || Array.isArray(input)
     || Object.keys(input).some((key) => key !== "base" && key !== "description")) {
@@ -96,9 +110,11 @@ function dispatchInput(input: JsonValue): { base: string; description: string } 
 }
 
 function boundedString(value: unknown, name: string, maxBytes: number): string {
-  if (typeof value !== "string" || value.trim() === "" || value.includes("\0")
-    || Buffer.byteLength(value, "utf8") > maxBytes) {
-    throw new Error(`Invalid ${name}: expected non-empty text of at most ${String(maxBytes)} UTF-8 bytes without NUL`);
+  const expected = `Invalid ${name}: expected non-empty text of at most ${String(maxBytes)} UTF-8 bytes without NUL`;
+  // A missing or non-text field is a malformed request, not a draft the user can correct.
+  if (typeof value !== "string") throw new Error(expected);
+  if (value.trim() === "" || value.includes("\0") || Buffer.byteLength(value, "utf8") > maxBytes) {
+    throw new DispatchRejection(expected);
   }
   return value;
 }
@@ -118,13 +134,16 @@ async function runGit(
   cwd: string,
   args: readonly string[],
   signal: AbortSignal,
+  rejectOnExit: boolean,
 ): Promise<string> {
   const result = await context.execFile({
     file: "git", cwd, args, unsetEnv: GIT_LOCAL_ENV_VARS, timeoutMs: 10_000, signal,
   });
   if (result.stdoutTruncated || result.stderrTruncated) throw new Error("Git output exceeded the host limit");
   if (result.exitCode !== 0 || result.signal !== null) {
-    throw new Error(`Git command failed (${result.signal ?? String(result.exitCode)}): ${result.stderr.trim()}`);
+    const message = `Git command failed (${result.signal ?? String(result.exitCode)}): ${result.stderr.trim()}`;
+    // Only a Git exit status rejects; a signal, such as the timeout, stays an unexpected failure.
+    throw rejectOnExit && result.signal === null && result.exitCode !== null ? new DispatchRejection(message) : new Error(message);
   }
   return result.stdout;
 }

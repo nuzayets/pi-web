@@ -22,6 +22,7 @@ export default {
   starting: text("Starting a new conversation…", "Dispatch in progress"),
   opening: text("Conversation started. Opening it…", "Navigation to newly created conversation in progress"),
   started: text("Conversation started.", "Dispatch succeeded but navigation failed"),
+  rejected: text("No conversation was started. Correct the details and try again.", "Dispatch was refused before starting a conversation; the draft stays editable"),
   uncertain: text("Dispatch could not be confirmed.", "Dispatch outcome unknown; no automatic retry"),
   openSession: text<{ error: string; session: string }>("{error} Open conversation {session} in Sessions.", "Navigation failure recovery; error and session ID remain unchanged"),
   checkSessions: text<{ error: string }>("{error} Check Sessions before trying again; a conversation may already have started.", "Uncertain dispatch recovery; backend error remains unchanged"),

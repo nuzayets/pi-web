@@ -70,6 +70,15 @@ async function fixture(exec?: ServerPluginActivationContextV5["execFile"]) {
   };
 }
 
+/** Returns the message of an exact `{ rejected }` dispatch result. */
+async function rejection(result: JsonValue | Promise<JsonValue>): Promise<string> {
+  const value = await result;
+  const entries = typeof value === "object" && value !== null ? Object.entries(value) : [];
+  const [key, message] = entries.length === 1 ? entries[0] ?? [] : [];
+  if (key !== "rejected" || typeof message !== "string") throw new Error(`Expected a definite rejection, got ${JSON.stringify(value)}`);
+  return message;
+}
+
 describe("Workflows v5 project peer", () => {
   it("prepares using the catalog main, deduplicates local/remote branches, and sanitizes Git", async () => {
     const f = await fixture();
@@ -122,12 +131,21 @@ describe("Workflows v5 project peer", () => {
   });
 
   it.each([
-    null, [], {}, { base: "", description: "purpose" }, { base: "main", description: "  " },
-    { base: "main\0", description: "purpose" }, { base: "a".repeat(1025), description: "purpose" },
-    { base: "main", description: "é".repeat(8193) }, { base: "main", description: "purpose", workspaceId: "guessed" },
-  ].map((input) => ({ input })))("rejects invalid dispatch input without creating a session: %j", async ({ input }) => {
+    null, [], {}, { base: 1, description: "purpose" }, { base: "main", description: "purpose", workspaceId: "guessed" },
+  ].map((input) => ({ input })))("throws for a malformed dispatch request without creating a session: %j", async ({ input }) => {
     const f = await fixture();
     await expect(f.request("dispatch", input)).rejects.toThrow();
+    expect(f.run).not.toHaveBeenCalled();
+    expect(f.execFile).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { base: "", description: "purpose" }, { base: "main", description: "  " },
+    { base: "main\0", description: "purpose" }, { base: "a".repeat(1025), description: "purpose" },
+    { base: "main", description: "é".repeat(8193) },
+  ].map((input) => ({ input })))("rejects invalid dispatch values before creating a session: %j", async ({ input }) => {
+    const f = await fixture();
+    expect(await rejection(f.request("dispatch", input))).toMatch(/^Invalid (?:base|description):/u);
     expect(f.run).not.toHaveBeenCalled();
     expect(f.execFile).not.toHaveBeenCalled();
   });
@@ -158,6 +176,22 @@ describe("Workflows v5 project peer", () => {
   ])("rejects unsuccessful or incomplete Git results: %j", async (result) => {
     const f = await fixture(() => Promise.resolve(result));
     await expect(f.request("dispatch", { base: "main", description: "purpose" })).rejects.toThrow();
+    expect(f.run).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { result: { ...success(), exitCode: 128, stderr: "fatal: Needed a single revision" }, rejected: true },
+    { result: { ...success(), exitCode: null, signal: "SIGTERM" }, rejected: false },
+    { result: { ...success(), stderrTruncated: true }, rejected: false },
+  ])("reports only a Git exit status from base verification as a definite rejection: %j", async ({ result, rejected }) => {
+    const f = await fixture();
+    const git = f.execFile.getMockImplementation();
+    if (git === undefined) throw new Error("Expected the default Git fixture");
+    f.execFile.mockImplementation((request) => request.args?.includes("--verify") === true ? Promise.resolve(result) : git(request));
+    const dispatch = f.request("dispatch", { base: "missing", description: "purpose" });
+    await (rejected
+      ? expect(dispatch).resolves.toEqual({ rejected: "Git command failed (128): fatal: Needed a single revision" })
+      : expect(dispatch).rejects.toThrow());
     expect(f.run).not.toHaveBeenCalled();
   });
 
@@ -214,7 +248,7 @@ it("supports detached HEAD and remote branches, rejects missing/malicious bases 
   f.list.mockResolvedValue([{ ...main, path: root }]);
   await expect(f.request("prepare")).resolves.toMatchObject({ branches: ["main", "origin/main"], defaultBase: "HEAD" });
   for (const base of ["missing-branch", "--help", "main; touch never"]) {
-    await expect(f.request("dispatch", { base, description: "purpose" })).rejects.toThrow("Git command failed");
+    expect(await rejection(f.request("dispatch", { base, description: "purpose" }))).toContain("Git command failed (128)");
   }
   expect(f.run).not.toHaveBeenCalled();
   await expect(f.request("dispatch", { base: "HEAD", description: "purpose" })).resolves.toMatchObject({ sessionId: "fresh-session" });
