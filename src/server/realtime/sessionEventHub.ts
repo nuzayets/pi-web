@@ -2,6 +2,7 @@ import type { GlobalSessionEvent, RealtimeEvent, SessionNotificationSummaryEvent
 import { isSessionActive } from "../../shared/activity.js";
 import { projectBrowserSessionEvent } from "../browserMessageProjection.js";
 import { SESSION_MEDIA_MODE } from "../../shared/sessionMedia.js";
+import { SESSION_TOOL_TEXT_DERIVED, toolTextFromContent } from "../../shared/sessionToolText.js";
 import { SessionMediaIndex, type SessionMediaScope } from "../sessions/sessionMediaIndex.js";
 
 export interface RealtimeSocket {
@@ -12,8 +13,11 @@ export interface RealtimeSocket {
   on(event: "close", listener: () => void): unknown;
 }
 
+/** Each subscriber's tool text opt-in, keyed by its socket. */
+type SessionSubscribers = Map<RealtimeSocket, typeof SESSION_TOOL_TEXT_DERIVED | undefined>;
+
 export class SessionEventHub {
-  private readonly socketsBySession = new Map<string, { inline: Set<RealtimeSocket>; reference: Set<RealtimeSocket> }>();
+  private readonly socketsBySession = new Map<string, { inline: SessionSubscribers; reference: SessionSubscribers }>();
   private readonly globalSockets = new Set<RealtimeSocket>();
   private readonly seqBySession = new Map<string, number>();
   /** Last published active status JSON per session, tracked separately per channel. */
@@ -24,14 +28,14 @@ export class SessionEventHub {
   /** The service and routes use this same owned index; service disposal clears it. */
   constructor(readonly mediaIndex = new SessionMediaIndex()) {}
 
-  add(sessionId: string, socket: RealtimeSocket, mediaMode?: typeof SESSION_MEDIA_MODE): void {
+  add(sessionId: string, socket: RealtimeSocket, mediaMode?: typeof SESSION_MEDIA_MODE, toolText?: typeof SESSION_TOOL_TEXT_DERIVED): void {
     let subscribers = this.socketsBySession.get(sessionId);
     if (!subscribers) {
-      subscribers = { inline: new Set(), reference: new Set() };
+      subscribers = { inline: new Map(), reference: new Map() };
       this.socketsBySession.set(sessionId, subscribers);
     }
     const sockets = mediaMode === SESSION_MEDIA_MODE ? subscribers.reference : subscribers.inline;
-    sockets.add(socket);
+    sockets.set(socket, toolText);
     socket.on("close", () => {
       sockets.delete(socket);
       if (subscribers.inline.size === 0 && subscribers.reference.size === 0) this.socketsBySession.delete(sessionId);
@@ -69,8 +73,8 @@ export class SessionEventHub {
     // when the browser joins or requests a previously published media id.
     const referenceEvent = projectBrowserSessionEvent(event, (image) => this.mediaIndex.reference(mediaScope, image));
     const sockets = this.socketsBySession.get(sessionId);
-    if (sockets !== undefined && sockets.inline.size > 0) this.sendToSockets(sockets.inline, JSON.stringify({ ...projectBrowserSessionEvent(event), seq }));
-    if (sockets !== undefined && sockets.reference.size > 0) this.sendToSockets(sockets.reference, JSON.stringify({ ...referenceEvent, seq }));
+    if (sockets !== undefined && sockets.inline.size > 0) this.sendToSubscribers(sockets.inline, projectBrowserSessionEvent(event), seq);
+    if (sockets !== undefined && sockets.reference.size > 0) this.sendToSubscribers(sockets.reference, referenceEvent, seq);
   }
 
   /**
@@ -103,7 +107,19 @@ export class SessionEventHub {
     for (const socket of sockets) this.sendToSocket(sockets, socket, payload);
   }
 
-  private sendToSocket(sockets: Set<RealtimeSocket>, socket: RealtimeSocket, payload: string): void {
+  /** Serializes each payload variant at most once, and only when a subscriber receives it. */
+  private sendToSubscribers(subscribers: SessionSubscribers, event: SessionUiEvent, seq: number): void {
+    let legacy: string | undefined;
+    let derived: string | undefined;
+    const legacyPayload = () => legacy ??= JSON.stringify({ ...event, seq });
+    // JSON.stringify drops the undefined `text` key, leaving every other field in place.
+    const derivedPayload = () => derived ??= hasDerivableToolText(event) ? JSON.stringify({ ...event, text: undefined, seq }) : legacyPayload();
+    for (const [socket, toolText] of subscribers) {
+      this.sendToSocket(subscribers, socket, toolText === SESSION_TOOL_TEXT_DERIVED ? derivedPayload() : legacyPayload());
+    }
+  }
+
+  private sendToSocket(sockets: Pick<Set<RealtimeSocket>, "delete">, socket: RealtimeSocket, payload: string): void {
     if (socket.readyState !== socket.OPEN) return;
     try {
       socket.send(payload);
@@ -116,6 +132,10 @@ export class SessionEventHub {
       }
     }
   }
+}
+
+function hasDerivableToolText(event: SessionUiEvent): boolean {
+  return (event.type === "tool.update" || event.type === "tool.end") && toolTextFromContent(event.content) === event.text;
 }
 
 /**

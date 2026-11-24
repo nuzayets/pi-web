@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
-import type { SessionStatus } from "../../shared/apiTypes.js";
+import type { SessionStatus, SessionUiEvent } from "../../shared/apiTypes.js";
+import { toolTextFromContent } from "../../shared/sessionToolText.js";
 import { SessionMediaIndex } from "../sessions/sessionMediaIndex.js";
 import { SessionEventHub, type RealtimeSocket } from "./sessionEventHub.js";
 
@@ -26,6 +27,10 @@ function sessionStatus(patch: Partial<SessionStatus> = {}): SessionStatus {
     cost: 0,
     ...patch,
   };
+}
+
+function contentOf(frame: unknown): unknown {
+  return typeof frame === "object" && frame !== null && "content" in frame ? frame.content : undefined;
 }
 
 function publishStatusOnBothChannels(hub: SessionEventHub, status: SessionStatus): void {
@@ -117,6 +122,54 @@ describe("SessionEventHub", () => {
     expect(hub.currentSeq("s1")).toBe(3);
     expect(source.content).toEqual([thinking, image]);
     expect(thinking.thinkingSignature).toBe("secret");
+  });
+
+  it("omits tool text only for derived-text subscribers whose content rebuilds it, with legacy frames and seq unchanged", () => {
+    const hub = new SessionEventHub();
+    const legacyInline = new FakeSocket();
+    const legacyReference = new FakeSocket();
+    const derivedReference = new FakeSocket();
+    const derivedInline = new FakeSocket();
+    hub.add("s1", legacyInline);
+    hub.add("s1", legacyReference, "reference");
+    hub.add("s1", derivedReference, "reference", "derived");
+    hub.add("s1", derivedInline, undefined, "derived");
+    const image = { type: "image", data: "AQID", mimeType: "image/png" };
+    const imageReference = hub.mediaIndex.reference(mediaScope, image);
+    if (imageReference === undefined) throw new Error("Expected image reference");
+    const text = "naïve 🚀 \ud800";
+    const derivable: SessionUiEvent[] = [
+      { type: "tool.update", toolName: "bash", toolCallId: "call", text: "", content: [] },
+      { type: "tool.update", toolName: "read", toolCallId: "call", text: `${text}\n[image]\nlast`, content: [{ type: "text", text }, { type: "text", text: "" }, image, { type: "text", text: "last" }], details: { truncation: { content: text } } },
+      { type: "tool.end", toolName: "bash", toolCallId: "call", text: "done", content: [{ type: "text", text: "done" }], isError: false },
+    ];
+    const kept: SessionUiEvent[] = [
+      { type: "tool.end", toolName: "bash", toolCallId: "call", text: "summary", content: [{ type: "text", text: "full" }], isError: false },
+      { type: "tool.update", toolName: "mcp", toolCallId: "call", text: "resource", content: [{ type: "resource", text: "resource" }] },
+      { type: "tool.end", toolName: "bash", toolCallId: "call", text: "", isError: true },
+      { type: "assistant.delta", text: "hello" },
+    ];
+    for (const event of [...derivable, ...kept]) hub.publish("s1", event, mediaScope);
+
+    // Reference projection replaces only the image object inside an otherwise identical frame.
+    const reference = (frame: string) => frame.replaceAll(JSON.stringify(image), JSON.stringify(imageReference));
+    [...derivable, ...kept].forEach((event, index) => {
+      const seq = index + 1;
+      const legacyFrame = JSON.stringify({ ...event, seq });
+      expect(legacyInline.send).toHaveBeenNthCalledWith(seq, legacyFrame);
+      expect(legacyReference.send).toHaveBeenNthCalledWith(seq, reference(legacyFrame));
+      if (index < derivable.length && (event.type === "tool.update" || event.type === "tool.end")) {
+        const { text: omitted, ...lean } = event;
+        const derivedFrame = JSON.stringify({ ...lean, seq });
+        expect(derivedInline.send).toHaveBeenNthCalledWith(seq, derivedFrame);
+        expect(derivedReference.send).toHaveBeenNthCalledWith(seq, reference(derivedFrame));
+        for (const frame of [derivedFrame, reference(derivedFrame)]) expect(toolTextFromContent(contentOf(JSON.parse(frame)))).toBe(omitted);
+      } else {
+        expect(derivedInline.send).toHaveBeenNthCalledWith(seq, legacyFrame);
+        expect(derivedReference.send).toHaveBeenNthCalledWith(seq, reference(legacyFrame));
+      }
+    });
+    expect(hub.currentSeq("s1")).toBe(derivable.length + kept.length);
   });
 
   it("binds transient live images to the explicit workspace without decoding, even with no subscribers", () => {

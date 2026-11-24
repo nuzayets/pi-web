@@ -1,5 +1,6 @@
 import type { SessionRef } from "../../../shared/apiTypes";
 import { SESSION_MEDIA_MODE } from "../../../shared/sessionMedia";
+import { SESSION_TOOL_TEXT_DERIVED } from "../../../shared/sessionToolText";
 import { resolveAppUrl } from "../appUrl";
 
 type SessionLookup = SessionRef | string;
@@ -12,13 +13,14 @@ function sessionCwd(session: SessionLookup): string | undefined {
   return typeof session === "string" ? undefined : session.cwd;
 }
 
-function referenceSessionPath(session: SessionLookup, endpoint: string, options: { limit?: number; before?: number } | undefined, machineId: string): string {
+function referenceSessionPath(session: SessionLookup, endpoint: string, options: { limit?: number; before?: number; toolText?: typeof SESSION_TOOL_TEXT_DERIVED } | undefined, machineId: string): string {
   const params = new URLSearchParams();
   const cwd = sessionCwd(session);
   if (cwd !== undefined && cwd !== "") params.set("cwd", cwd);
   if (options?.limit !== undefined) params.set("limit", String(options.limit));
   if (options?.before !== undefined) params.set("before", String(options.before));
   params.set("media", SESSION_MEDIA_MODE);
+  if (options?.toolText !== undefined) params.set("toolText", options.toolText);
   return `api/machines/${encodeURIComponent(machineId)}/sessions/${encodeURIComponent(sessionId(session))}/${endpoint}?${params.toString()}`;
 }
 
@@ -35,7 +37,8 @@ export function streamSnapshotPath(session: SessionRef, machineId = "local"): st
 }
 
 export function sessionEventsPath(session: SessionRef, machineId = "local"): string {
-  return referenceSessionPath(session, "events", undefined, machineId);
+  // The socket decoder rebuilds tool text the server omits as derivable from content.
+  return referenceSessionPath(session, "events", { toolText: SESSION_TOOL_TEXT_DERIVED }, machineId);
 }
 
 export function sessionMediaPath(session: SessionRef, mediaId: string, machineId = "local"): string {

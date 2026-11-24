@@ -19,6 +19,7 @@ import { requireDefaultStreamingBehavior } from "../../../shared/streamingBehavi
 import { requireInstallationName } from "../../../shared/installationName";
 import { requireHostAccess } from "../../../shared/hostAccess";
 import { parseRuntimeActivityPresentation } from "../../../shared/sessionActivityPresentation";
+import { toolTextFromContent } from "../../../shared/sessionToolText";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -764,7 +765,7 @@ export function parseSessionStreamEvent(value: unknown): SessionUiEvent {
         type: "tool.update",
         toolName: requireString(record, "toolName"),
         toolCallId: requireString(record, "toolCallId"),
-        text: requireString(record, "text"),
+        text: requireToolText(record),
         ...optionalField("content", record["content"]),
         ...optionalField("details", record["details"]),
       };
@@ -773,7 +774,7 @@ export function parseSessionStreamEvent(value: unknown): SessionUiEvent {
         type: "tool.end",
         toolName: requireString(record, "toolName"),
         toolCallId: requireString(record, "toolCallId"),
-        text: requireString(record, "text"),
+        text: requireToolText(record),
         isError: requireBoolean(record, "isError"),
         ...optionalField("content", record["content"]),
         ...optionalField("details", record["details"]),
@@ -862,6 +863,15 @@ export function parseRealtimeStreamEvent(value: unknown): RealtimeStreamEvent {
     default:
       throw new Error("Unsupported realtime stream event type");
   }
+}
+
+/** The session socket opts into derived tool text: servers omit `text` only when content rebuilds it exactly. */
+function requireToolText(record: Record<string, unknown>): string {
+  if (record["text"] === undefined) {
+    const derived = toolTextFromContent(record["content"]);
+    if (derived !== undefined) return derived;
+  }
+  return requireString(record, "text");
 }
 
 function requirePresent(record: Record<string, unknown>, key: string): unknown {

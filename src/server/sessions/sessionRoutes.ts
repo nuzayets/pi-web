@@ -3,6 +3,7 @@ import { ASK_USER_COMMENT_MAX_LENGTH, ASK_USER_ID_MAX_LENGTH, ASK_USER_OPTION_LI
 import { parseSessionDefaultsUpdate } from "../../shared/sessionDefaults.js";
 import { projectBrowserMessageResponse, projectBrowserStreamSnapshot, projectBrowserTranscriptSnapshot, type BrowserImageProjector } from "../browserMessageProjection.js";
 import { isSessionMediaId, SESSION_MEDIA_MODE } from "../../shared/sessionMedia.js";
+import { SESSION_TOOL_TEXT_DERIVED } from "../../shared/sessionToolText.js";
 import { isSessionImageMimeType } from "./sessionMediaIndex.js";
 import { normalizeRequestCwd } from "../workingDirectory.js";
 import type { SessionEventHub } from "../realtime/sessionEventHub.js";
@@ -18,6 +19,10 @@ interface SessionQuery {
 interface MessageQuery extends SessionQuery {
   before?: string;
   limit?: string;
+}
+
+interface SessionEventsQuery extends SessionQuery {
+  toolText?: string;
 }
 
 interface PromptRequestBody {
@@ -557,10 +562,15 @@ export function registerSessionRoutes(app: FastifyInstance, sessions: SessionRou
     }
   });
 
-  app.get<{ Params: { sessionId: string }; Querystring: SessionQuery }>(`${prefix}/sessions/:sessionId/events`, { websocket: true }, (socket, request) => {
+  app.get<{ Params: { sessionId: string }; Querystring: SessionEventsQuery }>(`${prefix}/sessions/:sessionId/events`, { websocket: true }, (socket, request) => {
     // Only the id matters for event subscription; cwd is intentionally ignored
     // so a malformed value cannot throw inside the websocket handler.
-    eventHub.add(request.params.sessionId, socket, request.query.media === SESSION_MEDIA_MODE ? SESSION_MEDIA_MODE : undefined);
+    eventHub.add(
+      request.params.sessionId,
+      socket,
+      request.query.media === SESSION_MEDIA_MODE ? SESSION_MEDIA_MODE : undefined,
+      request.query.toolText === SESSION_TOOL_TEXT_DERIVED ? SESSION_TOOL_TEXT_DERIVED : undefined,
+    );
   });
 
   app.get(`${prefix}/sessions/events`, { websocket: true }, (socket) => {

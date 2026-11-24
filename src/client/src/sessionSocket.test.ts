@@ -260,6 +260,12 @@ describe("socket stream validation", () => {
     expect(parseSessionSocketEvent({ type: "tool.start", toolName: "read", toolCallId: "call-1" })).toBeUndefined();
     expect(parseSessionSocketEvent({ type: "tool.update", toolName: "read", toolCallId: "call-1", text: 4 })).toBeUndefined();
     expect(parseSessionSocketEvent({ type: "tool.end", toolName: "read", toolCallId: "call-1", text: "done" })).toBeUndefined();
+    // Text is omitted only when content rebuilds it, so neither may be missing or unreadable.
+    expect(parseSessionSocketEvent({ type: "tool.update", toolName: "read", toolCallId: "call-1" })).toBeUndefined();
+    expect(parseSessionSocketEvent({ type: "tool.end", toolName: "read", toolCallId: "call-1", isError: false, details: {} })).toBeUndefined();
+    expect(parseSessionSocketEvent({ type: "tool.update", toolName: "mcp", toolCallId: "call-1", content: [{ type: "resource", text: "r" }] })).toBeUndefined();
+    expect(parseSessionSocketEvent({ type: "tool.end", toolName: "read", toolCallId: "call-1", isError: false, content: "done" })).toBeUndefined();
+    expect(parseSessionSocketEvent({ type: "tool.update", toolName: "read", toolCallId: "call-1", text: null, content: [] })).toBeUndefined();
     expect(parseSessionSocketEvent({ type: "shell.start", command: "ls", excludeFromContext: "yes" })).toBeUndefined();
     expect(parseSessionSocketEvent({ type: "shell.chunk", chunk: 8 })).toBeUndefined();
     expect(parseSessionSocketEvent({ type: "shell.end", exitCode: "0" })).toBeUndefined();
@@ -278,6 +284,24 @@ describe("socket stream validation", () => {
     expect(parseSessionSocketEvent({ type: "session.startup", activity: activityWire() })).toBeUndefined();
     expect(parseSessionSocketEvent({ type: "terminal.created", terminal: { id: "terminal-1" } })).toBeUndefined();
     expect(parseSessionSocketEvent({ type: "totally.unknown" })).toBeUndefined();
+  });
+
+  it("rebuilds tool text omitted from derived-text frames exactly, keeping content and details", () => {
+    const content = [{ type: "text", text: "naïve \ud800" }, { type: "text", text: "" }, { type: "image", mediaId: "a".repeat(64), mimeType: "image/png", byteSize: 3 }];
+    const details = { truncation: { truncated: true, content: "tail" }, fullOutputPath: "/tmp/out" };
+    for (const legacy of [
+      { type: "tool.update", toolName: "bash", toolCallId: "call-1", text: "", content: [], seq: 3 },
+      { type: "tool.update", toolName: "read", toolCallId: "call-1", text: "naïve \ud800\n[image]", content, details, seq: 4 },
+      { type: "tool.end", toolName: "read", toolCallId: "call-1", text: "naïve \ud800\n[image]", isError: false, content, details, seq: 5 },
+    ]) {
+      const { text, ...derived } = legacy;
+      void text;
+      expect(parseSessionSocketEvent(JSON.parse(JSON.stringify(derived)))).toEqual(legacy);
+      expect(parseSessionSocketEvent(legacy)).toEqual(legacy);
+    }
+    // Sent text stays authoritative even where content would rebuild something else.
+    expect(parseSessionSocketEvent({ type: "tool.end", toolName: "bash", toolCallId: "call-1", text: "summary", isError: false, content: [{ type: "text", text: "full" }] }))
+      .toMatchObject({ text: "summary" });
   });
 
   it("rebuilds stream frames from validated fields and carries the hub seq stamp", () => {

@@ -1548,6 +1548,7 @@ type SessionUiEventBody =
   | { type: "assistant.delta"; text: string; streamId?: string }
   | { type: "assistant.thinking.delta"; text: string; streamId?: string }
   | { type: "tool.start"; toolName: string; toolCallId: string; summary: string; args?: unknown }
+  // `toolText=derived` subscribers receive these without `text` when content rebuilds it; see sessionToolText.ts.
   | { type: "tool.update"; toolName: string; toolCallId: string; text: string; content?: unknown; details?: unknown }
   | { type: "tool.end"; toolName: string; toolCallId: string; text: string; isError: boolean; content?: unknown; details?: unknown }
   | { type: "shell.start"; command: string; excludeFromContext?: boolean }

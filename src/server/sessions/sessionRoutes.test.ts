@@ -1142,27 +1142,32 @@ describe("session routes", () => {
     } finally { await routeApp.close(); }
   });
 
-  it("negotiates websocket projection from each subscriber's media query", async () => {
+  it("negotiates websocket projection from each subscriber's media and tool text query", async () => {
     const routeApp = Fastify({ logger: false });
     await routeApp.register(fastifyWebsocket);
     const hub = new SessionEventHub();
     registerSessionRoutes(routeApp, new CapturingRouteSessionService(), hub);
     await routeApp.ready();
-    const inline = await routeApp.injectWS("/sessions/session-1/events?media=unknown");
+    const inline = await routeApp.injectWS("/sessions/session-1/events?media=unknown&toolText=unknown");
     const reference = await routeApp.injectWS("/sessions/session-1/events?media=reference&cwd=ignored");
+    const derived = await routeApp.injectWS("/sessions/session-1/events?media=reference&toolText=derived");
     try {
       const inlineFrame: Promise<unknown[]> = once(inline, "message");
       const referenceFrame: Promise<unknown[]> = once(reference, "message");
+      const derivedFrame: Promise<unknown[]> = once(derived, "message");
       const image = { type: "image", data: "AQID", mimeType: "image/png" };
       hub.publish("session-1", { type: "tool.end", toolName: "read", toolCallId: "call", text: "[image]", content: [image], isError: false }, { id: "session-1", cwd: "/repo" });
       const [legacyPayload] = await inlineFrame;
       const [referencePayload] = await referenceFrame;
-      expect(JSON.parse(String(legacyPayload))).toMatchObject({ content: [image], seq: 1 });
-      expect(JSON.parse(String(referencePayload))).toMatchObject({ content: [hub.mediaIndex.reference({ id: "session-1", cwd: "/repo" }, image)], seq: 1 });
+      const [derivedPayload] = await derivedFrame;
+      expect(JSON.parse(String(legacyPayload))).toMatchObject({ text: "[image]", content: [image], seq: 1 });
+      expect(JSON.parse(String(referencePayload))).toMatchObject({ text: "[image]", content: [hub.mediaIndex.reference({ id: "session-1", cwd: "/repo" }, image)], seq: 1 });
       expect(String(referencePayload)).not.toContain(image.data);
+      expect(String(derivedPayload)).toBe(String(referencePayload).replace("\"text\":\"[image]\",", ""));
     } finally {
       inline.terminate();
       reference.terminate();
+      derived.terminate();
       await routeApp.close();
     }
   });
