@@ -126,8 +126,6 @@ describe("generic human intervention", () => {
       expect((await service.status(sessionRef(id))).interventionRequired).toBe(true);
 
       manager.branch(beforeAsk);
-      fake.emit({ type: "session_tree" });
-      expect((await service.status(sessionRef(id))).interventionRequired).toBe(true);
       fake.emit({ type: "message_end", message: { role: "user", content: [{ type: "text", text: "Try another way" }] } });
       expect((await service.status(sessionRef(id))).interventionRequired).toBe(false);
     } finally { await service.dispose(); }

@@ -35,7 +35,7 @@ async function interventionFixture(requestCall: Pick<Extract<AssistantMessage["c
   const sessionDir = join(directory, "sessions");
   const transcript = SessionManager.create(directory, sessionDir);
   transcript.appendMessage({ role: "user", content: "Work on this", timestamp: 1 });
-  transcript.appendMessage({
+  const beforeFormId = transcript.appendMessage({
     role: "assistant", content: [{ type: "text", text: "Working" }], api: "anthropic-messages", provider: testModel().provider, model: testModel().id,
     usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
     stopReason: "stop", timestamp: 2,
@@ -125,7 +125,7 @@ async function interventionFixture(requestCall: Pick<Extract<AssistantMessage["c
     };
   };
   const waitingSurfaces = async () => ({ status: (await service.status(ref)).interventionRequired, ...(await rowAndFlags()) });
-  return { ref, service, currentSession, continueGoal, runToIdle, rowAndFlags, waitingSurfaces };
+  return { ref, beforeFormId, service, currentSession, continueGoal, runToIdle, rowAndFlags, waitingSurfaces };
 }
 
 type InterventionFixture = Awaited<ReturnType<typeof interventionFixture>>;
@@ -169,6 +169,22 @@ describe("intervention through later user input on a real Pi runtime", () => {
     expect(await f.waitingSurfaces()).toEqual(waiting);
 
     await close(f);
+    await f.runToIdle(3);
+    expect((await f.service.transcriptSnapshot(f.ref)).openAsk).toBeUndefined();
+    expect(await f.waitingSurfaces()).toEqual(notWaiting);
+  }, 30_000);
+
+  it("ends an ask_user wait on the next message after navigating to an entry before the form", async () => {
+    const f = await interventionFixture(askUserCall);
+    await f.currentSession().prompt("Check with me before continuing");
+    await f.runToIdle(1);
+    await f.service.prompt(f.ref, TYPED_PROMPT);
+    await f.runToIdle(2);
+    expect(await f.waitingSurfaces()).toEqual(waiting);
+
+    const expectedLeafId = f.currentSession().sessionManager.getLeafId();
+    await f.service.navigateTree(f.ref, { targetId: f.beforeFormId, expectedLeafId, summary: { mode: "none" } });
+    await f.service.prompt(f.ref, "Try another way");
     await f.runToIdle(3);
     expect((await f.service.transcriptSnapshot(f.ref)).openAsk).toBeUndefined();
     expect(await f.waitingSurfaces()).toEqual(notWaiting);

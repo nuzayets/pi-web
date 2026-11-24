@@ -82,13 +82,6 @@ export function openAskUserRequest(messages: readonly unknown[]): AskUserRequest
   return undefined;
 }
 
-/** Whether appending a message can change {@link openAskUserRequest}: only ask_user results and answers or skips can. */
-export function changesOpenAskUserRequest(message: unknown): boolean {
-  if (!isRecord(message)) return false;
-  return (message["role"] === "toolResult" && message["toolName"] === "ask_user")
-    || (message["role"] === "custom" && message["customType"] === ASK_USER_ANSWERS_CUSTOM_TYPE);
-}
-
 function storedAsk(message: unknown): unknown {
   if (!isRecord(message) || message["role"] !== "toolResult" || message["toolName"] !== "ask_user" || message["isError"] !== false) return undefined;
   const details = message["details"];
