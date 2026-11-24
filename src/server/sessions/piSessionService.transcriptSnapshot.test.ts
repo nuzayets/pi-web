@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { ASK_USER_ANSWERS_CUSTOM_TYPE } from "../../shared/apiTypes.js";
 import { SessionEventHub } from "../realtime/sessionEventHub.js";
 import { PiSessionService } from "./piSessionService.js";
 import { fakeRuntime, fakeSessionManager, runtimeCreator, sessionGateway, sessionRecord, sessionRef, testModelRuntime } from "./piSessionService.testSupport.js";
@@ -26,6 +27,9 @@ function fixture(readBranch?: () => Promise<unknown[]>) {
 const streamIdMatcher: unknown = expect.any(String);
 const ref = sessionRef("session-1");
 const user = { role: "user", content: "hello" };
+const pendingForm = { askId: "ask-1", askedAt: "2026-02-01T10:00:00.000Z", questions: [{ id: "db", question: "Which database?", options: [] }] };
+const askResult = { role: "toolResult", toolName: "ask_user", isError: false, details: { ask: pendingForm } };
+const askAnswers = { role: "custom", customType: ASK_USER_ANSWERS_CUSTOM_TYPE, details: { askId: "ask-1", reason: "cancelled" } };
 
 describe("PiSessionService.transcriptSnapshot", () => {
   it("transforms snapshot history and pending echoes without transforming the published partial", async () => {
@@ -80,6 +84,29 @@ describe("PiSessionService.transcriptSnapshot", () => {
       expect(snapshot.status).toMatchObject({ messageCount: 1, isStreaming: stillActive });
       expect(snapshot.seq).toBe(events.currentSeq(ref.id));
       expect(snapshot.partial).toBeNull();
+    } finally { await service.dispose(); }
+  });
+
+  // A stale disk branch must not pair a closed form with a watermark past its
+  // closing event, or an opened form with one past its posting event.
+  it.each([
+    { change: "answered", disk: [askResult], runtime: [askResult, askAnswers], pendingAsk: null },
+    { change: "posted", disk: [], runtime: [askResult], pendingAsk: pendingForm },
+  ])("captures pendingAsk with the page and watermark when the form is $change during an idle disk read", async ({ disk, runtime, pendingAsk }) => {
+    const read = deferred<unknown[]>();
+    const reading = deferred<undefined>();
+    const { service, fake, branch, events } = fixture(() => { reading.resolve(undefined); return read.promise; });
+    branch.push(...disk.map((message) => ({ type: "message", message })));
+    try {
+      const result = service.transcriptSnapshot(ref);
+      await reading.promise;
+      branch.splice(0, branch.length, ...runtime.map((message) => ({ type: "message", message })));
+      fake.emit({ type: "message_end", message: runtime.at(-1) });
+      read.resolve(disk.map((message) => ({ type: "message", message })));
+      const snapshot = await result;
+      expect(snapshot.page.messages).toEqual(runtime);
+      expect(snapshot.pendingAsk).toEqual(pendingAsk);
+      expect(snapshot.seq).toBe(events.currentSeq(ref.id));
     } finally { await service.dispose(); }
   });
 

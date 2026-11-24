@@ -3007,6 +3007,7 @@ export class PiSessionService implements SessionRouteService {
       partial: this.publishedAssistantPartials.get(session) ?? null,
       extensionUi: this.extensionUi.snapshot(session.sessionId),
       ...(openAsk === undefined ? {} : { openAsk }),
+      pendingAsk: openAsk ?? null,
     };
   }
 

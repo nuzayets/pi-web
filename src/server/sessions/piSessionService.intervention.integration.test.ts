@@ -159,7 +159,10 @@ describe("intervention through later user input on a real Pi runtime", () => {
       { role: "assistant", stopReason: "stop" },
     ]);
     // The form is still open and answerable by its ask id, so the session still waits for the user.
-    expect((await f.service.transcriptSnapshot(f.ref)).openAsk).toEqual(postedAsk);
+    // The snapshot reports it even though its tool result precedes the page.
+    const tail = await f.service.transcriptSnapshot(f.ref, { limit: 2 });
+    expect(tail.page.messages).toMatchObject([{ role: "user" }, { role: "assistant" }]);
+    expect(tail).toMatchObject({ openAsk: postedAsk, pendingAsk: postedAsk });
     expect(await f.waitingSurfaces()).toEqual(waiting);
 
     // The same saved branch still waits without a live runtime and after reopening.
@@ -170,11 +173,13 @@ describe("intervention through later user input on a real Pi runtime", () => {
 
     await close(f);
     await f.runToIdle(3);
-    expect((await f.service.transcriptSnapshot(f.ref)).openAsk).toBeUndefined();
+    const closedSnapshot = await f.service.transcriptSnapshot(f.ref);
+    expect(closedSnapshot).not.toHaveProperty("openAsk");
+    expect(closedSnapshot.pendingAsk).toBeNull();
     expect(await f.waitingSurfaces()).toEqual(notWaiting);
   }, 30_000);
 
-  it("ends an ask_user wait on the next message after navigating to an entry before the form", async () => {
+  it("ends an ask_user wait on the next message after navigating before the form, and reports the form again on its branch", async () => {
     const f = await interventionFixture(askUserCall);
     await f.currentSession().prompt("Check with me before continuing");
     await f.runToIdle(1);
@@ -182,12 +187,23 @@ describe("intervention through later user input on a real Pi runtime", () => {
     await f.runToIdle(2);
     expect(await f.waitingSurfaces()).toEqual(waiting);
 
-    const expectedLeafId = f.currentSession().sessionManager.getLeafId();
-    await f.service.navigateTree(f.ref, { targetId: f.beforeFormId, expectedLeafId, summary: { mode: "none" } });
+    const formLeafId = f.currentSession().sessionManager.getLeafId();
+    if (formLeafId === null) throw new Error("Expected the form branch leaf");
+    await f.service.navigateTree(f.ref, { targetId: f.beforeFormId, expectedLeafId: formLeafId, summary: { mode: "none" } });
     await f.service.prompt(f.ref, "Try another way");
     await f.runToIdle(3);
-    expect((await f.service.transcriptSnapshot(f.ref)).openAsk).toBeUndefined();
+    expect((await f.service.transcriptSnapshot(f.ref)).pendingAsk).toBeNull();
     expect(await f.waitingSurfaces()).toEqual(notWaiting);
+
+    // Returning does not restore Needs input, but the form is answerable on this branch again.
+    await f.service.navigateTree(f.ref, { targetId: formLeafId, expectedLeafId: f.currentSession().sessionManager.getLeafId(), summary: { mode: "none" } });
+    const tail = await f.service.transcriptSnapshot(f.ref, { limit: 2 });
+    expect(tail.status.interventionRequired).toBe(false);
+    expect(tail.page.messages).toMatchObject([{ role: "user", content: [{ type: "text", text: TYPED_PROMPT }] }, { role: "assistant" }]);
+    expect(tail.pendingAsk).toEqual(postedAsk);
+    await f.service.submitAsk(f.ref, postedAsk.askId, { answers: [{ id: "db", values: ["pg"] }] });
+    await f.runToIdle(4);
+    expect((await f.service.transcriptSnapshot(f.ref)).pendingAsk).toBeNull();
   }, 30_000);
 
   it("ends a non-question intervention on a Goal continuation and the agent's reply", async () => {

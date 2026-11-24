@@ -1504,6 +1504,12 @@ export interface SessionTranscriptSnapshot extends SessionStreamSnapshot {
   extensionUi?: SessionExtensionUi;
   /** The unanswered question, even when it precedes the page. */
   openAsk?: AskUserRequest;
+  /**
+   * The same open question as `openAsk`, or `null` when the selected branch has
+   * none at `seq`. Servers that predate this field omit it, so absence means
+   * unknown rather than no question.
+   */
+  pendingAsk?: AskUserRequest | null;
 }
 
 /** A widget button runs one of the session's slash commands. */

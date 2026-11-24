@@ -192,8 +192,10 @@ describe("machine-scoped session proxy routes", () => {
   });
 
   it.each(["/api", "/api/machines/local"])("revalidates a transcript snapshot through %s only while the daemon body is byte-identical", async (prefix) => {
-    const snapshot = { page: { start: 0, total: 1, messages: [{ role: "user", content: "hello" }] }, status: { sessionId: "session-1" }, seq: 12, partial: null };
-    const changed = { ...snapshot, seq: 13 };
+    const pendingAsk = { askId: "ask-1", askedAt: "2026-02-01T10:00:00.000Z", questions: [{ id: "db", question: "Which database?", options: [] }] };
+    const snapshot = { page: { start: 3, total: 4, messages: [{ role: "user", content: "hello" }] }, status: { sessionId: "session-1" }, seq: 12, partial: null, pendingAsk };
+    // Only the off-page form changed: its answer must not revalidate the stale form.
+    const changed = { ...snapshot, pendingAsk: null };
     for (const body of [snapshot, snapshot, snapshot, changed]) {
       daemon.respondWith({ statusCode: 200, headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
     }
