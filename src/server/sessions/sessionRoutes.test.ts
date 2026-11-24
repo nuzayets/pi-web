@@ -1014,6 +1014,30 @@ describe("session routes", () => {
     }
   });
 
+  it("forwards an optional prompt request ID and rejects a malformed one without calling the service", async () => {
+    const routeApp = Fastify({ logger: false });
+    await routeApp.register(fastifyWebsocket);
+    const routeService = new CapturingRouteSessionService();
+    registerSessionRoutes(routeApp, routeService, new SessionEventHub());
+    const cwd = resolve("/repo");
+
+    try {
+      const accepted = await routeApp.inject({ method: "POST", url: "/sessions/session-1/prompt", payload: { cwd, text: "hello", requestId: "voice-1" } });
+      expect(accepted.statusCode).toBe(200);
+      expect(accepted.json()).toEqual({ accepted: true });
+      expect(routeService.calls).toEqual([{ lookup: { id: "session-1", cwd }, text: "hello", options: { requestId: "voice-1" } }]);
+
+      for (const requestId of [42, "", "x".repeat(ASK_USER_ID_MAX_LENGTH + 1)]) {
+        const rejected = await routeApp.inject({ method: "POST", url: "/sessions/session-1/prompt", payload: { cwd, text: "hello", requestId } });
+        expect(rejected.statusCode).toBe(400);
+      }
+      expect(routeService.calls).toHaveLength(1);
+    } finally {
+      await routeService.dispose();
+      await routeApp.close();
+    }
+  });
+
   it("passes cwd when per-session routes include workspace context", async () => {
     const routeApp = Fastify({ logger: false });
     await routeApp.register(fastifyWebsocket);
@@ -1704,8 +1728,8 @@ class CapturingRouteSessionService implements SessionRouteService {
   cycleThinkingLevel(): never { throw unusedRouteMethod("cycleThinkingLevel"); }
   commands(): Promise<[]> { return Promise.resolve([]); }
 
-  prompt(lookup: SessionRouteRef, text: unknown, _streamingBehavior?: unknown, attachments?: unknown): Promise<void> {
-    this.calls.push(attachments === undefined ? { lookup, text } : { lookup, text, attachments });
+  prompt(lookup: SessionRouteRef, text: unknown, _streamingBehavior?: unknown, attachments?: unknown, options?: { requestId?: string }): Promise<void> {
+    this.calls.push({ lookup, text, ...(attachments === undefined ? {} : { attachments }), ...(options === undefined ? {} : { options }) });
     return Promise.resolve();
   }
 

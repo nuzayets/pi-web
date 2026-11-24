@@ -1575,7 +1575,18 @@ type SessionUiEventBody =
   | { type: "session.created"; session: SessionInfo }
   /** The selected branch/runtime changed; clients refresh reads without changing local selection or drafts. */
   | { type: "session.tree.changed" }
-  | { type: "pi.event"; eventType: string };
+  | { type: "pi.event"; eventType: string; promptReply?: PromptReplyLink };
+
+/**
+ * Sent live with `pi.event` `agent_settled`, never stored or replayed: the run's
+ * saved final reply (`entryId`, as in `assistant.saved`) answered the prompt
+ * submitted with `requestId` and no other input. Absent whenever that is not
+ * certain, including on runtimes whose SDK does not report prompt messages.
+ */
+export interface PromptReplyLink {
+  requestId: string;
+  entryId: string;
+}
 
 /** Global invalidation for the daemon-owned enabled-model scope. */
 export interface ModelScopeChangedEvent {

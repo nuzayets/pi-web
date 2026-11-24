@@ -30,6 +30,7 @@ interface PromptRequestBody {
   text?: unknown;
   streamingBehavior?: unknown;
   attachments?: unknown;
+  requestId?: unknown;
 }
 
 interface AttachmentsRequestBody {
@@ -370,7 +371,8 @@ export function registerSessionRoutes(app: FastifyInstance, sessions: SessionRou
   app.post<{ Params: { sessionId: string }; Body: PromptRequestBody | undefined }>(`${prefix}/sessions/:sessionId/prompt`, async (request, reply) => {
     try {
       const body = optionalRecord(request.body);
-      await sessions.prompt(sessionRefFromBody(request.params.sessionId, body), body["text"], body["streamingBehavior"], body["attachments"]);
+      const requestId = body["requestId"] === undefined ? undefined : requireBoundedId(body["requestId"], "requestId");
+      await sessions.prompt(sessionRefFromBody(request.params.sessionId, body), body["text"], body["streamingBehavior"], body["attachments"], requestId === undefined ? undefined : { requestId });
       return { accepted: true };
     } catch (error) {
       return reply.code(mutationErrorStatus(error)).send({ error: errorMessage(error) });

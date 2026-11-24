@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { readFile, writeFile } from "node:fs/promises";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import type { AgentMessage, StreamFn } from "@earendil-works/pi-agent-core";
-import type { McpAuthServerOption, McpAuthServersResponse, OAuthFlowState, SessionActivity, SessionExtensionUi, SessionQueueMessageMutation } from "../../shared/apiTypes.js";
+import type { McpAuthServerOption, McpAuthServersResponse, OAuthFlowState, PromptReplyLink, SessionActivity, SessionExtensionUi, SessionQueueMessageMutation } from "../../shared/apiTypes.js";
 import { runtimeActivityFallbackLabel, type RuntimeActivityPresentation } from "../../shared/sessionActivityPresentation.js";
 import { QueueCompatibilityGuard, mirroredQueueEntries, mutableQueueAgent, mutableTextMirror, parseQueueMessageMutation, queuedMessageAttachmentCounts, queuedMessageAttachmentCount, snapshotAgentQueues, type QueueAgent } from "./queuedMessageMutation.js";
 import {
@@ -229,6 +229,15 @@ function refMatchesStartupSession(ref: PiSessionRef, session: PiAgentSession): b
 }
 
 type QueuedPromptKind = "steer" | "followUp";
+
+interface PromptReplyRun {
+  /** Started model input other than assistant, tool result and system messages. */
+  inputs: object[];
+  /** Input that starts no message (a boundary draft) or a compaction changed the run's context. */
+  mixed: boolean;
+  /** The last assistant message that ended. */
+  finalReply: unknown;
+}
 
 interface QueuedPrompt {
   kind: QueuedPromptKind;
@@ -551,7 +560,11 @@ export interface PiAgentSession {
   reload(options?: { beforeSessionStart?: () => void | Promise<void> }): Promise<void>;
   waitForIdle(): Promise<void>;
   getContextUsage(): ClientSessionStatus["contextUsage"] | undefined;
-  prompt(text: string, options?: { streamingBehavior?: "steer" | "followUp"; images?: ImageContent[]; expandPromptTemplates?: boolean }): Promise<void>;
+  prompt(text: string, options?: {
+    streamingBehavior?: "steer" | "followUp"; images?: ImageContent[]; expandPromptTemplates?: boolean;
+    /** SDKs with the reply hook also pass the exact user message they started or queued. */
+    preflightResult?: (disposition: string, message?: unknown) => void;
+  }): Promise<void>;
   sendCustomMessage(message: { customType: string; content: string; display: boolean; details?: unknown }, options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" }): Promise<void>;
   executeBash(command: string, onChunk?: (chunk: string) => void, options?: { excludeFromContext?: boolean }): Promise<{ output: string; exitCode: number | undefined; cancelled: boolean; truncated: boolean; fullOutputPath?: string }>;
   navigateTree?(targetId: string, options?: PiTreeNavigationOptions): Promise<{ editorText?: string; cancelled: boolean; aborted?: boolean; summaryEntry?: unknown }>;
@@ -1287,6 +1300,10 @@ export class PiSessionService implements SessionRouteService {
   private readonly assistantStreamIds = new WeakMap<PiAgentSession, string>();
   /** Latest live assistant reply; `entryId` is set once its turn ends after Pi saved it. */
   private readonly savedReplies = new WeakMap<PiAgentSession, { message: unknown; streamId: string | undefined; entryId?: string }>();
+  /** Request IDs of prompts submitted with one, keyed by the exact user message the SDK reported for them. */
+  private readonly promptReplyRequests = new WeakMap<object, string>();
+  /** What the current SDK run delivered, from `agent_start` to `agent_settled`. */
+  private readonly promptReplyRuns = new WeakMap<PiAgentSession, PromptReplyRun>();
   /** Settings-wide queue preventing enabled-model read/modify/write races across sessions. */
   private modelScopeMutationQueue: Promise<void> = Promise.resolve();
   /** Global and workspace-owned enabled-model states; live session scopes project one entry lazily. */
@@ -3400,7 +3417,7 @@ export class PiSessionService implements SessionRouteService {
     });
   }
 
-  async prompt(ref: PiSessionRef, text: unknown, streamingBehavior?: unknown, attachments?: unknown, options?: { echoUserMessage?: boolean }): Promise<void> {
+  async prompt(ref: PiSessionRef, text: unknown, streamingBehavior?: unknown, attachments?: unknown, options?: { echoUserMessage?: boolean; requestId?: string }): Promise<void> {
     const promptText = requirePromptText(text);
     // Command-forwarded prompts (e.g. /skill:*) are expanded by the agent, which
     // streams the canonical message back. The client doesn't render the raw
@@ -3421,17 +3438,18 @@ export class PiSessionService implements SessionRouteService {
       return;
     }
     if (session.isCompacting) {
+      // Its request ID is dropped: a prompt queued here can never have a reply link.
       this.enqueuePromptDuringCompaction(session, promptText, behavior ?? "followUp", images, echoUserMessage);
       return;
     }
-    void this.submitPrompt(session, promptText, behavior, images, echoUserMessage);
+    void this.submitPrompt(session, promptText, behavior, images, echoUserMessage, options?.requestId);
   }
 
-  private submitPrompt(session: PiAgentSession, text: string, behavior: QueuedPromptKind | undefined, images: ImageContent[] = [], echoUserMessage = true): Promise<void> {
-    return this.beginPromptSubmission(session, text, behavior, images, echoUserMessage).catch(() => undefined);
+  private submitPrompt(session: PiAgentSession, text: string, behavior: QueuedPromptKind | undefined, images: ImageContent[] = [], echoUserMessage = true, requestId?: string): Promise<void> {
+    return this.beginPromptSubmission(session, text, behavior, images, echoUserMessage, true, requestId).catch(() => undefined);
   }
 
-  private beginPromptSubmission(session: PiAgentSession, text: string, behavior: QueuedPromptKind | undefined, images: ImageContent[] = [], echoUserMessage = true, expandPromptTemplates = true): Promise<void> {
+  private beginPromptSubmission(session: PiAgentSession, text: string, behavior: QueuedPromptKind | undefined, images: ImageContent[] = [], echoUserMessage = true, expandPromptTemplates = true, requestId?: string): Promise<void> {
     this.publishActivity(session, behavior === "steer" ? { kind: "steeringQueued" } : behavior === "followUp" ? { kind: "messageQueued" } : { kind: "promptAccepted" }, "active");
     const echoes = this.pendingPromptEchoes.get(session) ?? [];
     const userCount = historyMessagesFromEntries(session.sessionManager.getBranch()).filter((message) => isRecord(message) && message["role"] === "user").length;
@@ -3444,7 +3462,14 @@ export class PiSessionService implements SessionRouteService {
       this.pendingPromptEchoes.set(session, [...echoes, echo]);
       this.events.publish(session.sessionId, { type: "message.append", message: this.browserTranscriptMessage(session, echo.message) }, { id: session.sessionId, cwd: session.sessionManager.getCwd() });
     }
-    const promptOptions = expandPromptTemplates ? buildPromptOptions(behavior, images) : { ...buildPromptOptions(behavior, images), expandPromptTemplates: false };
+    const baseOptions = expandPromptTemplates ? buildPromptOptions(behavior, images) : { ...buildPromptOptions(behavior, images), expandPromptTemplates: false };
+    const promptOptions = requestId === undefined ? baseOptions : {
+      ...baseOptions,
+      // A queued message joins a run something else started, so only a started one can own the reply.
+      preflightResult: (disposition: string, message?: unknown) => {
+        if (disposition === "started" && typeof message === "object" && message !== null) this.promptReplyRequests.set(message, requestId);
+      },
+    };
     const commandName = expandPromptTemplates && text.startsWith("/") ? text.slice(1).split(" ")[0] : undefined;
     const trackEarlyFailure = behavior === undefined
       && this.subsessionLinkForActiveChild(session) !== undefined
@@ -5194,6 +5219,54 @@ export class PiSessionService implements SessionRouteService {
   }
 
   /**
+   * Follows one SDK run and, at its `agent_settled`, names the saved final reply
+   * of a prompt submitted with a request ID. It stays silent unless that
+   * prompt's user message started the run and was its only input: no other
+   * user, custom or extension message (steered, queued, or a boundary draft
+   * such as an agent_before_settle continuation), no compaction and no
+   * replacing context edit anywhere in the run. The run must not be aborted,
+   * and its last assistant message must have stopped cleanly, been saved, and
+   * be the transcript's newest entry. Each submission is named at most once.
+   * Context transforms that leave no session event are outside what it observes.
+   */
+  private trackPromptReplyRun(session: PiAgentSession, eventType: string | undefined, message: unknown, event: unknown): PromptReplyLink | undefined {
+    if (eventType === "agent_start") {
+      if (!this.promptReplyRuns.has(session)) this.promptReplyRuns.set(session, { inputs: [], mixed: false, finalReply: undefined });
+      return undefined;
+    }
+    const run = this.promptReplyRuns.get(session);
+    if (run === undefined) return undefined;
+    const role = getString(message, "role");
+    if (eventType === "message_start" && role !== "assistant" && role !== "toolResult" && role !== "system") {
+      if (isRecord(message)) run.inputs.push(message);
+      else run.mixed = true;
+    } else if (eventType === "message_end" && role === "assistant") {
+      run.finalReply = message;
+    } else if (eventType === "compaction_start") {
+      run.mixed = true;
+    } else if (eventType === "entry_appended") {
+      // Boundary drafts start no message, yet change what the model reads: a
+      // custom message (even a hidden one), an extension compaction, or a context
+      // edit replacing earlier content. A null replacement only omits content,
+      // as the SDK does for a failed reply it retries.
+      const entry = getProperty(event, "entry");
+      const entryType = getString(entry, "type");
+      if (entryType === "message" || entryType === "custom_message" || entryType === "compaction"
+        || (entryType === "context_edit" && getProperty(entry, "replacement") !== null)) run.mixed = true;
+    }
+    if (eventType !== "agent_settled") return undefined;
+    this.promptReplyRuns.delete(session);
+    const [request] = run.inputs;
+    const requestId = request === undefined ? undefined : this.promptReplyRequests.get(request);
+    for (const input of run.inputs) this.promptReplyRequests.delete(input);
+    if (requestId === undefined || run.inputs.length !== 1 || run.mixed || getBoolean(event, "aborted") !== false) return undefined;
+    if (getString(run.finalReply, "stopReason") !== "stop" || session.sessionFile === undefined) return undefined;
+    const branch = session.sessionManager.getBranch();
+    const entryId = savedMessageEntryId(branch, run.finalReply);
+    return entryId !== undefined && newestTranscriptEntryId(branch) === entryId ? { requestId, entryId } : undefined;
+  }
+
+  /**
    * The ending span's latest saved reply, while the transcript shows nothing
    * after it. Every idle observation consumes it, so it cannot name a later span.
    */
@@ -5390,7 +5463,9 @@ export class PiSessionService implements SessionRouteService {
         this.publishedAssistantPartials.delete(session);
       }
       this.trackSavedReply(session, eventType, message, streamId);
+      const promptReply = this.trackPromptReplyRun(session, eventType, message, event);
       const clientEvent = toClientEvent(event, session.thinkingLevel, streamId);
+      if (promptReply !== undefined && clientEvent.type === "pi.event") clientEvent.promptReply = promptReply;
       if ((clientEvent.type === "message.end" || clientEvent.type === "message.append") && clientEvent.message !== undefined) {
         clientEvent.message = this.browserTranscriptMessage(session, clientEvent.message);
       }
@@ -5421,6 +5496,7 @@ export class PiSessionService implements SessionRouteService {
       this.publishedAssistantPartials.delete(session);
       this.assistantStreamIds.delete(session);
       this.selfArchiveRequests.delete(session);
+      this.promptReplyRuns.delete(session);
     };
     this.active.set(session.sessionId, active);
   }
