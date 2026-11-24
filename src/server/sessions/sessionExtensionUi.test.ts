@@ -62,6 +62,42 @@ describe("SessionExtensionUiState", () => {
     expect(state.snapshot("s").statuses).toEqual({ goal: "A" });
   });
 
+  it("sends a widget's request ID in one live publication, never in later ones or snapshots", () => {
+    vi.useFakeTimers();
+    const { state, published, advance } = fixture();
+    state.setWidget("s", "w", ["answer"], { requestReply: "btw" }, "voice-1");
+    expect(published.at(-1)?.ui.widgets).toEqual([{ key: "w", lines: ["answer"], requestId: "voice-1" }]);
+    expect(state.snapshot("s").widgets).toEqual([{ key: "w", lines: ["answer"] }]);
+    advance(500);
+    state.setStatus("s", "goal", "active");
+    expect(published).toHaveLength(2);
+    expect(published.at(-1)?.ui.widgets).toEqual([{ key: "w", lines: ["answer"] }]);
+    // A link replaced before it was published is never sent.
+    state.setWidget("s", "w", ["answer"], undefined, "voice-2");
+    state.setWidget("s", "w", ["closing"], undefined);
+    advance(500);
+    expect(published).toHaveLength(3);
+    expect(published.flatMap(({ ui }) => ui.widgets).filter((widget) => widget.requestId !== undefined)).toHaveLength(1);
+  });
+
+  it("sends no request ID with a widget cut to the length limit, whose reply may be lost", () => {
+    vi.useFakeTimers();
+    const { state, published, advance } = fixture();
+    // Like /btw: recent tool calls with their arguments, then the answer.
+    const panel = (pattern: string) => `\`\`\`\n→ grep ${JSON.stringify({ pattern })}\n\`\`\`\n\nThe answer`;
+    const overlarge = panel("x".repeat(200_000));
+    state.setWidget("s", "w", [overlarge], { requestReply: "btw" }, "voice-1");
+    expect(published.at(-1)?.ui.widgets).toEqual([{ key: "w", lines: [overlarge.slice(0, 200_000)] }]);
+    advance(500);
+    state.setWidget("s", "w", ["x".repeat(200_000), "The answer"], undefined, "voice-2");
+    expect(published.at(-1)?.ui.widgets).toEqual([{ key: "w", lines: ["x".repeat(200_000)] }]);
+    // A widget at the limit is whole.
+    advance(500);
+    const whole = panel("x".repeat(200_000 - panel("").length));
+    state.setWidget("s", "w", [whole], undefined, "voice-3");
+    expect(published.at(-1)?.ui.widgets).toEqual([{ key: "w", lines: [whole], requestId: "voice-3" }]);
+  });
+
   it("clears a forgotten session's browsers once", () => {
     const { state, published } = fixture();
     state.forget("never-set");

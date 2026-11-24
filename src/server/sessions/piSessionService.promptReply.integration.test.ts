@@ -8,7 +8,7 @@ import {
   createAgentSession, DefaultResourceLoader, defineTool, SessionManager, SettingsManager,
   type AgentSession, type ExtensionContext, type InlineExtension, type SessionBoundaryDraft,
 } from "../../piSdk.js";
-import type { PromptReplyLink } from "../../shared/apiTypes.js";
+import type { ExtensionWidget, PromptReplyLink } from "../../shared/apiTypes.js";
 import { createPiSessionManagerGateway } from "./piSessionManagerGateway.js";
 import { PiSessionService, type PiSessionServiceDependencies } from "./piSessionService.js";
 import { CapturingSessionEventHub, createTestModelRuntime, emptyArchiveStore, testModel } from "./piSessionService.testSupport.js";
@@ -174,6 +174,147 @@ it.runIf(!sdkReportsPromptMessages)("sends no prompt reply link when the SDK doe
     expect(promptReplies(hub)).toEqual([]);
   });
 });
+
+// The SDK reports an extension command "handled" with or without the p5yr hook.
+describe("command reply link on an extension widget", () => {
+  it("names the request on the first live frame of the command's own opted-in final widget only", async () => {
+    const side = sideCommand();
+    await withHostedSession([], [side.extension], async ({ service, ref, hub }) => {
+      await service.prompt(ref, "/side a", undefined, undefined, { requestId: "voice-a" });
+      await vi.waitFor(() => { expect(side.started).toContain("a"); });
+      side.finish("a", true);
+      await vi.waitFor(() => { expect(widgetFrames(hub, "a").at(-1)?.lines).toEqual(["answer a"]); }, { timeout: 3000 });
+      expect(widgetFrames(hub, "a")).toEqual([{ key: "a", lines: ["running"] }, { key: "a", lines: ["answer a"], requestId: "voice-a" }]);
+
+      // Later frames of the whole state, and snapshots for reconnecting clients, omit it.
+      await service.prompt(ref, "/side b");
+      await vi.waitFor(() => { expect(widgetFrames(hub, "b")).not.toEqual([]); }, { timeout: 3000 });
+      expect(widgetFrames(hub, "a").at(-1)).toEqual({ key: "a", lines: ["answer a"] });
+      expect((await service.transcriptSnapshot(ref)).extensionUi?.widgets.find((widget) => widget.key === "a")).toEqual({ key: "a", lines: ["answer a"] });
+      expect(linkedFrames(hub)).toHaveLength(1);
+    });
+  });
+
+  it("names each overlapping command's own request, and none for a typed command or an unsuccessful result", async () => {
+    const side = sideCommand();
+    await withHostedSession([], [side.extension], async ({ service, ref, hub }) => {
+      await service.prompt(ref, "/side a", undefined, undefined, { requestId: "client-a" });
+      await service.prompt(ref, "/side b", undefined, undefined, { requestId: "client-b" });
+      await service.prompt(ref, "/side typed");
+      await service.prompt(ref, "/side stopped", undefined, undefined, { requestId: "client-stopped" });
+      await vi.waitFor(() => { expect(side.started).toEqual(["a", "b", "typed", "stopped"]); });
+      for (const [name, succeeded] of [["b", true], ["stopped", false], ["typed", true], ["a", true]] as const) {
+        side.finish(name, succeeded);
+        await vi.waitFor(() => { expect(widgetFrames(hub, name).at(-1)?.lines).toEqual([succeeded ? `answer ${name}` : "partial"]); }, { timeout: 3000 });
+      }
+
+      expect(linkedFrames(hub)).toEqual([{ key: "b", requestId: "client-b" }, { key: "a", requestId: "client-a" }]);
+    });
+  });
+
+  it("names neither request when the SDK defers a command into the scope of another command's settling run", async () => {
+    const side = sideCommand();
+    const settling = latch();
+    const release = latch();
+    await withHostedSession([reply([{ type: "text", text: "Started" }])], [side.extension, holdFirstSettle(settling.resolve, release.promise)], async ({ service, ref, session, hub }) => {
+      // /start returns once its run begins, so the SDK reports it handled in its own scope.
+      await service.prompt(ref, "/start", undefined, undefined, { requestId: "client-start" });
+      await settling.promise;
+      await service.prompt(ref, "/side deferred", undefined, undefined, { requestId: "client-deferred" });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(side.started).toEqual([]);
+      release.resolve();
+      await vi.waitFor(() => { expect(side.started).toEqual(["deferred"]); });
+      side.finish("deferred", true);
+      await vi.waitFor(() => { expect(widgetFrames(hub, "deferred").at(-1)?.lines).toEqual(["answer deferred"]); }, { timeout: 3000 });
+
+      expect(modelInputKinds(session)).toEqual(["user", "assistant"]);
+      expect(linkedFrames(hub)).toEqual([]);
+    });
+  });
+
+  it("names no request for a command another submitted command dispatches in its scope", async () => {
+    const side = sideCommand();
+    await withHostedSession([], [side.extension], async ({ service, ref, hub }) => {
+      // /forward dispatches /side through Pi's public API and returns, so the SDK reports /forward handled.
+      await service.prompt(ref, "/forward nested", undefined, undefined, { requestId: "client-forward" });
+      await vi.waitFor(() => { expect(side.started).toEqual(["nested"]); });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      side.finish("nested", true);
+      await vi.waitFor(() => { expect(widgetFrames(hub, "nested").at(-1)?.lines).toEqual(["answer nested"]); }, { timeout: 3000 });
+
+      expect(linkedFrames(hub)).toEqual([]);
+    });
+  });
+});
+
+interface SideCommand {
+  extension: InlineExtension;
+  /** Names `/side <name>` handled, in order. */
+  started: string[];
+  finish(name: string, succeeded: boolean): void;
+}
+
+/**
+ * Like /btw: `/side <name>` shows a running widget, returns, and later sets a
+ * final one opted in to the reply link only if `finish` reports success.
+ * `/forward <name>` runs `/side <name>` through Pi's public API and returns.
+ * `/start` starts a main run from its own command scope and returns.
+ */
+function sideCommand(): SideCommand {
+  const started: string[] = [];
+  const outcomes = new Map<string, (succeeded: boolean) => void>();
+  return {
+    started,
+    finish: (name, succeeded) => { outcomes.get(name)?.(succeeded); },
+    extension: (pi) => {
+      pi.registerCommand("side", {
+        description: "Side question",
+        handler: (name, ctx) => {
+          ctx.ui.setWidget(name, ["running"]);
+          void new Promise<boolean>((resolve) => { outcomes.set(name, resolve); }).then((succeeded) => {
+            // PI WEB's own option, beyond Pi's.
+            const options = { placement: "aboveEditor" as const, ...(succeeded ? { requestReply: "side" } : {}) };
+            ctx.ui.setWidget(name, [succeeded ? `answer ${name}` : "partial"], options);
+          });
+          started.push(name);
+          return Promise.resolve();
+        },
+      });
+      pi.registerCommand("forward", {
+        description: "Ask a side question for the user",
+        handler: (name) => { pi.sendUserMessage(`/side ${name}`, { expandPromptTemplates: true }); return Promise.resolve(); },
+      });
+      pi.registerCommand("start", {
+        description: "Start a main run",
+        handler: () => { pi.sendUserMessage("Start"); return Promise.resolve(); },
+      });
+    },
+  };
+}
+
+/** Holds the first `agent_settled` extension hook, while the SDK defers prompts, until `release`. */
+function holdFirstSettle(onHold: () => void, release: Promise<void>): InlineExtension {
+  return (pi) => {
+    let held = false;
+    pi.on("agent_settled", async () => {
+      if (held) return;
+      held = true;
+      onHold();
+      await release;
+    });
+  };
+}
+
+function widgetFrames(hub: CapturingSessionEventHub, key: string): ExtensionWidget[] {
+  return hub.sessionEvents.flatMap(({ event }) => event.type === "extension.ui" ? event.ui.widgets.filter((widget) => widget.key === key) : []);
+}
+
+function linkedFrames(hub: CapturingSessionEventHub): { key: string; requestId: string }[] {
+  return hub.sessionEvents.flatMap(({ event }) => event.type === "extension.ui"
+    ? event.ui.widgets.flatMap((widget) => widget.requestId === undefined ? [] : [{ key: widget.key, requestId: widget.requestId }])
+    : []);
+}
 
 interface HostedSession {
   service: PiSessionService;

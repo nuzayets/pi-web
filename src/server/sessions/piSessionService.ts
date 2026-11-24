@@ -261,6 +261,14 @@ type PiForkOptions = Parameters<ExtensionCommandContextActions["fork"]>[1];
 interface ExtensionCommandSubmission {
   session: PiAgentSession;
   active: boolean;
+  /**
+   * Once the SDK reports the submitted command handled in this scope: its
+   * invocation name and the prompt's request ID, which the first widget whose
+   * `requestReply` names that command takes.
+   */
+  reply?: { command: string; requestId: string };
+  /** A run settled in this scope, so commands the SDK deferred may run in it. */
+  hostedSettle?: boolean;
 }
 
 interface ExtensionCommandExecution {
@@ -3466,15 +3474,20 @@ export class PiSessionService implements SessionRouteService {
       this.pendingPromptEchoes.set(session, [...echoes, echo]);
       this.events.publish(session.sessionId, { type: "message.append", message: this.browserTranscriptMessage(session, echo.message) }, { id: session.sessionId, cwd: session.sessionManager.getCwd() });
     }
+    const submission: ExtensionCommandSubmission = { session, active: true };
+    const commandName = expandPromptTemplates && text.startsWith("/") ? text.slice(1).split(" ")[0] : undefined;
     const baseOptions = expandPromptTemplates ? buildPromptOptions(behavior, images) : { ...buildPromptOptions(behavior, images), expandPromptTemplates: false };
     const promptOptions = requestId === undefined ? baseOptions : {
       ...baseOptions,
       // A queued message joins a run something else started, so only a started one can own the reply.
       preflightResult: (disposition: string, message?: unknown) => {
         if (disposition === "started" && typeof message === "object" && message !== null) this.promptReplyRequests.set(message, requestId);
+        // A command the SDK deferred while a run settled reports from that run's scope instead.
+        else if (disposition === "handled" && commandName !== undefined && this.extensionCommandExecution.getStore()?.submission === submission && submission.hostedSettle !== true) {
+          submission.reply = { command: commandName, requestId };
+        }
       },
     };
-    const commandName = expandPromptTemplates && text.startsWith("/") ? text.slice(1).split(" ")[0] : undefined;
     const trackEarlyFailure = behavior === undefined
       && this.subsessionLinkForActiveChild(session) !== undefined
       && !session.extensionRunner.getRegisteredCommands().some((command) => command.invocationName === commandName);
@@ -3482,7 +3495,6 @@ export class PiSessionService implements SessionRouteService {
     const unsubscribe = !trackEarlyFailure ? undefined : session.subscribe((event) => {
       if (getString(event, "type") === "agent_start") agentStarted = true;
     });
-    const submission: ExtensionCommandSubmission = { session, active: true };
     const isExtensionCommand = session.extensionRunner.getRegisteredCommands().some((command) => command.invocationName === commandName);
     const promptPromise = this.runSessionEntryMutation(session, "send a prompt", () => isExtensionCommand
       ? this.extensionCommandExecution.run({ submission }, () => session.prompt(text, promptOptions))
@@ -5085,6 +5097,20 @@ export class PiSessionService implements SessionRouteService {
     }
   }
 
+  /**
+   * For a widget whose `requestReply` names the command a confirmed submission
+   * ran, set in that submission's scope, its request ID, once. Another command
+   * the submitted one dispatched in its scope names itself, so it gets none.
+   */
+  private takeCommandReplyRequestId(session: PiAgentSession, options: unknown): string | undefined {
+    const command = isRecord(options) ? options["requestReply"] : undefined;
+    const submission = this.extensionCommandExecution.getStore()?.submission;
+    if (typeof command !== "string" || submission?.session !== session || submission.reply?.command !== command) return undefined;
+    const { requestId } = submission.reply;
+    delete submission.reply;
+    return requestId;
+  }
+
   private runExtensionSessionControl<T>(session: PiAgentSession, operation: () => Promise<T>): Promise<T> {
     return this.extensionCommandExecution.run({ ...this.extensionCommandExecution.getStore(), sessionControl: true }, async () => {
       this.assertCurrentExtensionSession(session);
@@ -5139,7 +5165,9 @@ export class PiSessionService implements SessionRouteService {
           return (key: string, text: string | undefined) => { this.extensionUi.setStatus(session.sessionId, key, text); };
         }
         if (property === "setWidget") {
-          return (key: string, content: unknown, options?: unknown) => { this.extensionUi.setWidget(session.sessionId, key, content, options); };
+          return (key: string, content: unknown, options?: unknown) => {
+            this.extensionUi.setWidget(session.sessionId, key, content, options, this.takeCommandReplyRequestId(session, options));
+          };
         }
         if (property === "confirm") {
           return (title: string, message: string, opts?: ExtensionUIDialogOptions) =>
@@ -5453,7 +5481,15 @@ export class PiSessionService implements SessionRouteService {
       // message_end listeners run before SDK persistence. These later
       // boundaries can safely reconcile committed messages and failed intents.
       if (eventType === "turn_end" || eventType === "agent_settled") this.restoreSubsessionReceipts(session);
-      if (eventType === "agent_settled") this.scheduleSubsessionDelivery(session);
+      if (eventType === "agent_settled") {
+        this.scheduleSubsessionDelivery(session);
+        // The SDK runs commands it deferred in this scope right after this event.
+        const scope = this.extensionCommandExecution.getStore()?.submission;
+        if (scope !== undefined) {
+          scope.hostedSettle = true;
+          delete scope.reply;
+        }
+      }
       if (eventType === "message_start" && getString(message, "role") === "assistant") {
         this.assistantStreamIds.set(session, randomUUID());
       }

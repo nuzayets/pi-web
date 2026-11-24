@@ -33,12 +33,23 @@ function widgetActions(value: unknown): ExtensionWidgetAction[] | undefined {
 
 /** Only line content is representable in a browser; TUI component factories clear the widget. */
 export function extensionWidget(key: string, content: unknown, options: unknown): ExtensionWidget | undefined {
+  return browserWidget(key, content, options)?.widget;
+}
+
+/** The widget, and whether its lines were cut to the length limit. */
+function browserWidget(key: string, content: unknown, options: unknown): { widget: ExtensionWidget; clipped: boolean } | undefined {
   if (!Array.isArray(content) || !content.every((line) => typeof line === "string")) return undefined;
   let budget = WIDGET_MAX_LENGTH;
+  let clipped = false;
   const lines: string[] = [];
   for (const line of content) {
-    if (budget <= 0) break;
-    const text = plain(line).slice(0, budget);
+    if (budget <= 0) {
+      clipped = true;
+      break;
+    }
+    const whole = plain(line);
+    const text = whole.slice(0, budget);
+    clipped ||= text.length < whole.length;
     budget -= text.length;
     lines.push(text);
   }
@@ -46,13 +57,14 @@ export function extensionWidget(key: string, content: unknown, options: unknown)
   const record = typeof options === "object" && options !== null ? options : {};
   const title: unknown = Reflect.get(record, "title");
   const actions = widgetActions(Reflect.get(record, "actions"));
-  return {
+  const widget: ExtensionWidget = {
     key,
     lines,
     ...(typeof title === "string" && title !== "" ? { title: plain(title) } : {}),
     ...(Reflect.get(record, "markdown") === true ? { markdown: true } : {}),
     ...(actions === undefined ? {} : { actions }),
   };
+  return { widget, clipped };
 }
 
 /**
@@ -77,11 +89,15 @@ export class SessionExtensionUiState {
     this.schedule(sessionId, entry);
   }
 
-  setWidget(sessionId: string, key: string, content: unknown, options: unknown): void {
-    const widget = extensionWidget(key, content, options);
+  /**
+   * `requestId` goes out with the next publication only; later ones and
+   * snapshots omit it. A clipped widget may have lost the reply, so it gets none.
+   */
+  setWidget(sessionId: string, key: string, content: unknown, options: unknown, requestId?: string): void {
+    const parsed = browserWidget(key, content, options);
     const entry = this.entry(sessionId);
-    if (widget === undefined) entry.widgets.delete(key);
-    else entry.widgets.set(key, widget);
+    if (parsed === undefined) entry.widgets.delete(key);
+    else entry.widgets.set(key, requestId === undefined || parsed.clipped ? parsed.widget : { ...parsed.widget, requestId });
     this.schedule(sessionId, entry);
   }
 
@@ -129,10 +145,16 @@ export class SessionExtensionUiState {
     const ui = extensionUiOf(entry);
     const json = JSON.stringify(ui);
     if (json === entry.lastJson) return;
-    entry.lastJson = json;
-    entry.published = ui;
     entry.lastPublishedAt = this.now();
     this.publish(sessionId, ui);
+    for (const [key, widget] of entry.widgets) {
+      if (widget.requestId === undefined) continue;
+      const live = { ...widget };
+      delete live.requestId;
+      entry.widgets.set(key, live);
+    }
+    entry.published = extensionUiOf(entry);
+    entry.lastJson = JSON.stringify(entry.published);
   }
 }
 

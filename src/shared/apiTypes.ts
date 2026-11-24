@@ -1535,6 +1535,19 @@ export interface ExtensionWidget {
   title?: string;
   markdown?: boolean;
   actions?: ExtensionWidgetAction[];
+  /**
+   * The `requestId` of the prompt whose submitted extension command set this
+   * widget with the `requestReply` option naming that command (for example
+   * `requestReply: "btw"` from `/btw`), for its final successful result. Live
+   * only: sent at most once, in the first live `extension.ui` frame carrying
+   * the widget; later frames and snapshots omit it. Set only after Pi's prompt
+   * `preflightResult` reports that command `handled` in the prompt's own scope.
+   * Absent whenever that command is not certainly the one setting the widget,
+   * or the reply may be lost: a typed prompt without a request ID, a command
+   * the SDK deferred while a run settled, another command the submitted one
+   * dispatched, an ambiguous command name, or a widget cut to the length limit.
+   */
+  requestId?: string;
 }
 
 /** A session's current `ctx.ui.setStatus` texts and widgets, ANSI-free. */
