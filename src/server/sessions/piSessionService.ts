@@ -4568,8 +4568,7 @@ export class PiSessionService implements SessionRouteService {
     this.workspaceActivity?.removeSession(sessionId, cwd);
     // Closing a runtime ends work and dialogs, not persisted execution state.
     // Successful archive/delete paths remove this cold-session record afterward.
-    // Goal waiting stays cleared until shutdown has persisted the final Goal state,
-    // including in the status that clearing the queue below still publishes.
+    // Goal waiting stays cleared until shutdown has persisted the final Goal state.
     this.goalWaitingStates.delete(session);
     if (sessionFileExists(session.sessionFile) && this.interventionRequired(session)) {
       this.workspaceActivity?.applyPersistedSessionState(cwd, sessionId, { interventionRequired: true });
@@ -4580,8 +4579,10 @@ export class PiSessionService implements SessionRouteService {
     // emit a "stopped working" event that notifies the parent (e.g. on archive).
     // The parent/children link is kept so the parent can still see the child.
     if (this.subsessionLinkForActiveChild(active.runtime.session) !== undefined) this.subsessionNotifyArmed.delete(sessionId);
-    clearSessionQueue(active.runtime.session);
+    // Pi emits queue_update synchronously; a subscribed listener would republish
+    // the still-streaming runtime as working after its activity was removed.
     active.unsubscribe();
+    clearSessionQueue(active.runtime.session);
     active.runtime.setRebindSession(undefined);
     try {
       await this.abortSessionOperations(active.runtime.session);
