@@ -1,16 +1,9 @@
-/** pi-subagents publishes its async jobs in RPC mode as this widget: one line, prefix plus a versioned JSON snapshot. */
-export const SUBAGENTS_WIDGET_KEY = "subagent-async";
-const SUBAGENTS_PREFIX = "PI_SUBAGENT_ASYNC_JSON:";
-const SUBAGENTS_KIND = "pi-subagents.async-status-snapshot";
+import type { SubagentSnapshot } from "../../../shared/subagentsWidget";
+
 export const SUBAGENT_SUMMARY_STATES = ["running", "queued", "complete", "failed", "paused", "partial", "stopped", "rejected"] as const;
 export type SubagentSummaryState = typeof SUBAGENT_SUMMARY_STATES[number];
 
 type JsonRecord = Record<string, unknown>;
-
-export interface SubagentSnapshot {
-  runs: JsonRecord[];
-  omittedRuns: number;
-}
 
 export interface SubagentRow {
   depth: number;
@@ -37,22 +30,6 @@ function textOf(value: unknown): string | undefined {
 
 function countOf(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
-export function subagentSnapshot(lines: readonly string[]): SubagentSnapshot | undefined {
-  const line = lines[0];
-  if (line?.startsWith(SUBAGENTS_PREFIX) !== true) return undefined;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(line.slice(SUBAGENTS_PREFIX.length));
-  } catch {
-    return undefined;
-  }
-  if (!isRecord(parsed) || parsed["kind"] !== SUBAGENTS_KIND || parsed["version"] !== 1 || !Array.isArray(parsed["runs"])) return undefined;
-  const runs = parsed["runs"].filter(isRecord);
-  if (runs.length === 0) return undefined;
-  const omitted = parsed["omitted"];
-  return { runs, omittedRuns: (isRecord(omitted) ? countOf(omitted["runs"]) : undefined) ?? 0 };
 }
 
 // pi-subagents orders runs by state and latest activity, so parallel runs swap places on every update; keep launch order.

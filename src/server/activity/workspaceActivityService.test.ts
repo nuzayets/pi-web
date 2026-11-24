@@ -67,6 +67,7 @@ describe("WorkspaceActivityService", () => {
       sessions: [],
       interventionSessions: [{ sessionId: "s1", cwd: "/repo" }],
       goalWaitingSessions: [],
+      subagentsRunningSessions: [],
     });
 
     service.applySessionActivity("/moved", { sessionId: "s1", phase: "idle", label: "Idle", at: "now" });
@@ -75,6 +76,26 @@ describe("WorkspaceActivityService", () => {
     service.applySessionStatus("/moved", status());
     expect(service.snapshot().interventionSessions).toEqual([]);
     expect(onChanged).toHaveBeenCalled();
+  });
+
+  it("keeps running subagents of an idle session through status updates and reports only changes", () => {
+    const { service, onChanged } = activityRecord();
+    const running = [{ sessionId: "s1", cwd: "/repo" }];
+    service.applySubagentsRunning("/repo", "s1", false);
+    expect(onChanged).not.toHaveBeenCalled();
+
+    service.applySubagentsRunning("/repo", "s1", true);
+    service.applySubagentsRunning("/repo", "s1", true);
+    expect(onChanged).toHaveBeenCalledTimes(1);
+    service.applySessionStatus("/repo", status());
+    service.applyPersistedSessionState("/repo", "s1", { interventionRequired: false });
+    expect(service.snapshot()).toMatchObject({ workspaces: [], sessions: [], subagentsRunningSessions: running });
+
+    service.applySubagentsRunning("/repo", "s1", false);
+    expect(service.snapshot().subagentsRunningSessions).toEqual([]);
+    service.applySubagentsRunning("/repo", "s1", true);
+    service.removeSession("s1");
+    expect(service.snapshot().subagentsRunningSessions).toEqual([]);
   });
 
   it("seeds and clears intervention without replacing live status or activity", () => {

@@ -14,6 +14,7 @@ interface SessionRecord {
   activity?: SessionActivity;
   interventionRequired?: boolean;
   goalWaiting?: boolean;
+  subagentsRunning?: boolean;
 }
 
 interface TerminalRecord {
@@ -53,6 +54,19 @@ export class WorkspaceActivityService {
     record.cwd = cwd;
     record.interventionRequired = state.interventionRequired === true;
     record.goalWaiting = state.goalWaiting === true;
+    this.sessions.set(sessionId, record);
+    this.pruneIdleSession(sessionId);
+    this.notifyChangedCwds(previousCwd, cwd);
+  }
+
+  /** Live pi-subagents state, which outlasts the session's own work. Only a change notifies. */
+  applySubagentsRunning(cwd: string, sessionId: string, running: boolean): void {
+    const existing = this.sessions.get(sessionId);
+    if ((existing?.subagentsRunning === true) === running) return;
+    const record = existing ?? { cwd };
+    const previousCwd = existing?.cwd;
+    record.cwd = cwd;
+    record.subagentsRunning = running;
     this.sessions.set(sessionId, record);
     this.pruneIdleSession(sessionId);
     this.notifyChangedCwds(previousCwd, cwd);
@@ -103,6 +117,7 @@ export class WorkspaceActivityService {
     sessions: { sessionId: string; cwd: string }[];
     interventionSessions?: { sessionId: string; cwd: string }[];
     goalWaitingSessions?: { sessionId: string; cwd: string }[];
+    subagentsRunningSessions?: { sessionId: string; cwd: string }[];
   } {
     return {
       workspaces: this.activeCwds().map((cwd) => this.summaryForCwd(cwd)),
@@ -112,12 +127,14 @@ export class WorkspaceActivityService {
         record.interventionRequired === true ? [{ sessionId, cwd: record.cwd }] : []),
       goalWaitingSessions: [...this.sessions].flatMap(([sessionId, record]) =>
         record.goalWaiting === true ? [{ sessionId, cwd: record.cwd }] : []),
+      subagentsRunningSessions: [...this.sessions].flatMap(([sessionId, record]) =>
+        record.subagentsRunning === true ? [{ sessionId, cwd: record.cwd }] : []),
     };
   }
 
   private pruneIdleSession(sessionId: string): void {
     const record = this.sessions.get(sessionId);
-    if (record !== undefined && record.interventionRequired !== true && record.goalWaiting !== true
+    if (record !== undefined && record.interventionRequired !== true && record.goalWaiting !== true && record.subagentsRunning !== true
       && !isSessionActive(record.status, record.activity)) {
       this.sessions.delete(sessionId);
     }

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { readFile, writeFile } from "node:fs/promises";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import type { AgentMessage, StreamFn } from "@earendil-works/pi-agent-core";
-import type { McpAuthServerOption, McpAuthServersResponse, OAuthFlowState, SessionActivity, SessionQueueMessageMutation } from "../../shared/apiTypes.js";
+import type { McpAuthServerOption, McpAuthServersResponse, OAuthFlowState, SessionActivity, SessionExtensionUi, SessionQueueMessageMutation } from "../../shared/apiTypes.js";
 import { runtimeActivityFallbackLabel, type RuntimeActivityPresentation } from "../../shared/sessionActivityPresentation.js";
 import { QueueCompatibilityGuard, mirroredQueueEntries, mutableQueueAgent, mutableTextMirror, parseQueueMessageMutation, queuedMessageAttachmentCounts, queuedMessageAttachmentCount, snapshotAgentQueues, type QueueAgent } from "./queuedMessageMutation.js";
 import {
@@ -44,6 +44,7 @@ import { isSessionMediaId } from "../../shared/sessionMedia.js";
 import { getBuiltinExtensionFactories } from "./builtinExtensionFactories.js";
 import { McpAuthFlowService } from "./mcpAuthFlowService.js";
 import { SessionExtensionUiState } from "./sessionExtensionUi.js";
+import { hasRunningSubagent, subagentSnapshot, SUBAGENTS_WIDGET_KEY } from "../../shared/subagentsWidget.js";
 import {
   SESSION_STATE_CUSTOM_TYPE, SESSION_STATE_RESET_CUSTOM_TYPE, createSessionStateData, latestSessionStateEntries, readSessionState,
   validateSessionStateNamespace, type SessionStateData, type SessionStateSnapshot, type SessionStateWrite,
@@ -1165,7 +1166,7 @@ export interface PiSessionServiceDependencies {
   heartbeatIntervalMs?: number;
   /** Refresh browser session lists after agent-requested archival. */
   onSessionArchived?: (cwd: string) => void | Promise<void>;
-  workspaceActivity?: Pick<WorkspaceActivityService, "applySessionStatus" | "applySessionActivity" | "removeSession" | "reconcileSessionActivity" | "applyPersistedSessionState">;
+  workspaceActivity?: Pick<WorkspaceActivityService, "applySessionStatus" | "applySessionActivity" | "removeSession" | "reconcileSessionActivity" | "applyPersistedSessionState" | "applySubagentsRunning">;
   /**
    * When provided, `spawn_session` is available to sessions whose creation
    * provenance permits delegation, scoped to the project's workspaces.
@@ -1328,7 +1329,7 @@ export class PiSessionService implements SessionRouteService {
   private readonly createRuntime: PiWebCreateAgentSessionRuntimeFactory;
   private readonly createAgentRuntime: CreateAgentRuntime;
   private readonly modelRuntime: ModelRuntime;
-  private readonly workspaceActivity: Pick<WorkspaceActivityService, "applySessionStatus" | "applySessionActivity" | "removeSession" | "reconcileSessionActivity" | "applyPersistedSessionState"> | undefined;
+  private readonly workspaceActivity: Pick<WorkspaceActivityService, "applySessionStatus" | "applySessionActivity" | "removeSession" | "reconcileSessionActivity" | "applyPersistedSessionState" | "applySubagentsRunning"> | undefined;
   private readonly spawnTargets: SpawnTargetResolver | undefined;
   private readonly messageTargets: SpawnTargetResolver | undefined;
   private readonly crossProjectSessionMessages: boolean;
@@ -1433,7 +1434,10 @@ export class PiSessionService implements SessionRouteService {
     this.createAgentRuntime = deps.createAgentRuntime ?? defaultCreateAgentRuntime;
     this.workspaceActivity = deps.workspaceActivity;
     this.heartbeat = setInterval(() => { this.publishHeartbeats(); }, deps.heartbeatIntervalMs ?? 2000);
-    this.extensionUi = new SessionExtensionUiState((sessionId, ui) => { this.events.publish(sessionId, { type: "extension.ui", ui }); });
+    this.extensionUi = new SessionExtensionUiState((sessionId, ui) => {
+      this.events.publish(sessionId, { type: "extension.ui", ui });
+      this.applySubagentsRunning(sessionId, ui);
+    });
     this.commandService = new SessionCommandService(
       (sessionId) => this.getActive(this.activeSessionRef(sessionId)),
       (sessionId, text) => this.prompt(this.activeSessionRef(sessionId), text, undefined, undefined, { echoUserMessage: false }),
@@ -4881,6 +4885,8 @@ export class PiSessionService implements SessionRouteService {
           this.endSessionExtensionDialogs(boundSession.sessionId);
           this.extensionUi.forget(boundSession.sessionId);
           const changedIdentity = boundSession.sessionId !== session.sessionId;
+          // bindRuntime already removed the replaced id, so forgetting its UI cannot clear the mark.
+          if (changedIdentity) this.workspaceActivity?.applySubagentsRunning(boundSession.sessionManager.getCwd(), boundSession.sessionId, false);
           boundSession = session;
           // Publish existence as soon as status/dialog APIs can address it,
           // before session_start or arbitrary withSession code can park on a question.
@@ -5928,6 +5934,19 @@ export class PiSessionService implements SessionRouteService {
    */
   private hasOpenAsk(session: PiAgentSession, message: unknown): boolean {
     return openAskUserRequest([...historyMessagesFromEntries(session.sessionManager.getBranch()), message]) !== undefined;
+  }
+
+  /**
+   * pi-subagents keeps rendering its RPC widget from a cached context after the
+   * parent turn ends, so each flush also carries child runs of an idle parent.
+   * Clearing the widget, and forgetting the session's UI, clear the mark.
+   */
+  private applySubagentsRunning(sessionId: string, ui: SessionExtensionUi): void {
+    const session = this.active.get(sessionId)?.runtime.session;
+    if (session === undefined) return;
+    const widget = ui.widgets.find((candidate) => candidate.key === SUBAGENTS_WIDGET_KEY);
+    const running = widget !== undefined && hasRunningSubagent(subagentSnapshot(widget.lines));
+    this.workspaceActivity?.applySubagentsRunning(session.sessionManager.getCwd(), sessionId, running);
   }
 
   /** Every hosted session is bound before its status is read; anything else is not waiting. */

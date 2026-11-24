@@ -14,13 +14,14 @@ export interface ActiveCwdActivity {
   hasTerminalActivity: boolean;
 }
 
-/** Working activity and independent intervention and Goal waiting state, filtered by the recorder. */
+/** Working activity and independent intervention, Goal waiting and running subagents state, filtered by the recorder. */
 interface MachineStatusActivitySource {
   snapshot(): {
     workspaces: readonly ActiveCwdActivity[];
     sessions: readonly { sessionId: string; cwd: string }[];
     interventionSessions?: readonly { sessionId: string; cwd: string }[];
     goalWaitingSessions?: readonly { sessionId: string; cwd: string }[];
+    subagentsRunningSessions?: readonly { sessionId: string; cwd: string }[];
   };
 }
 
@@ -144,7 +145,8 @@ export class MachineStatusService {
     const unread = this.dependencies.unread.catalogSnapshot();
     const interventionSessions = activity.interventionSessions ?? [];
     const goalWaitingSessions = activity.goalWaitingSessions ?? [];
-    const flagsByCwd = this.flagsByCwd(activity.workspaces, unread.sessions, interventionSessions);
+    const subagentsRunningSessions = activity.subagentsRunningSessions ?? [];
+    const flagsByCwd = this.flagsByCwd(activity.workspaces, unread.sessions, interventionSessions, subagentsRunningSessions);
     const sessions = new FlagAccumulator();
     for (const session of activity.sessions) {
       sessions.add(session.sessionId, { [CORE_STATUS_FLAGS.working]: true });
@@ -154,6 +156,9 @@ export class MachineStatusService {
     }
     for (const session of interventionSessions) {
       sessions.add(session.sessionId, { [CORE_STATUS_FLAGS.interventionRequired]: true });
+    }
+    for (const session of subagentsRunningSessions) {
+      sessions.add(session.sessionId, { [CORE_STATUS_FLAGS.subagentsRunning]: true });
     }
     const attributions = await this.dependencies.attribution.attribute([...flagsByCwd.keys(), ...goalWaitingSessions.map((session) => session.cwd)]);
     // Saved Goal waits can come from any Pi session on the machine. Report only those
@@ -202,6 +207,7 @@ export class MachineStatusService {
     activities: readonly ActiveCwdActivity[],
     unreadSessions: readonly { cwd: string }[],
     interventionSessions: readonly { cwd: string }[],
+    subagentsRunningSessions: readonly { cwd: string }[],
   ): Map<string, StatusFlags> {
     const flagsByCwd = new Map<string, Record<string, boolean>>();
     const setFlag = (cwd: string, flagId: string): void => {
@@ -219,6 +225,9 @@ export class MachineStatusService {
     }
     for (const session of interventionSessions) {
       setFlag(session.cwd, CORE_STATUS_FLAGS.interventionRequired);
+    }
+    for (const session of subagentsRunningSessions) {
+      setFlag(session.cwd, CORE_STATUS_FLAGS.subagentsRunning);
     }
     return flagsByCwd;
   }

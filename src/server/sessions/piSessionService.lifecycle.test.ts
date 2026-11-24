@@ -1522,6 +1522,7 @@ describe("PiSessionService lifecycle, listing, and reload", () => {
         applySessionStatus: () => undefined,
         applySessionActivity: () => undefined,
         removeSession: () => undefined,
+        applySubagentsRunning: () => undefined,
         reconcileSessionActivity: (cwd, sessionIds) => { reconciliations.push({ cwd, sessionIds: [...sessionIds] }); },
       },
       heartbeatIntervalMs: 60_000,

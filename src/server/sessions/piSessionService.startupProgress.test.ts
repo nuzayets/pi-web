@@ -38,6 +38,7 @@ function recordingWorkspaceActivity() {
       applySessionStatus: () => { calls.push("applySessionStatus"); },
       applySessionActivity: () => { calls.push("applySessionActivity"); },
       removeSession: () => { calls.push("removeSession"); },
+      applySubagentsRunning: () => { calls.push("applySubagentsRunning"); },
       reconcileSessionActivity: () => { calls.push("reconcileSessionActivity"); },
     },
   };

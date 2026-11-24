@@ -69,6 +69,11 @@ export const CORE_STATUS_FLAGS = {
    * work. Only sessions inside registered workspaces set it.
    */
   goalWaiting: "core:goal-waiting",
+  /**
+   * A hosted session in the subtree has a running pi-subagents job, even while
+   * the session itself is idle.
+   */
+  subagentsRunning: "core:subagents-running",
 } as const;
 
 /**

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { hasLiveSubagents, subagentCounts, subagentRows, subagentSnapshot, type SubagentSnapshot } from "./subagents";
+import type { SubagentSnapshot } from "../../../shared/subagentsWidget";
+import { hasLiveSubagents, subagentCounts, subagentRows } from "./subagents";
 
 const runs = [
   { id: "a1", kind: "workflow", label: "reviewer, scout", state: "running", startedAt: 1_000, children: [
@@ -8,18 +9,9 @@ const runs = [
   ] },
   { id: "a2", kind: "subagent", label: "oracle", state: "failed", startedAt: 0, endedAt: 5_000 },
 ];
-const wire = (value: unknown) => [`PI_SUBAGENT_ASYNC_JSON:${JSON.stringify(value)}`];
 const snapshot: SubagentSnapshot = { runs, omittedRuns: 0 };
 
 describe("pi-subagents async snapshot", () => {
-  it("reads version 1 snapshots and ignores others", () => {
-    expect(subagentSnapshot(wire({ kind: "pi-subagents.async-status-snapshot", version: 1, omitted: { runs: 3 }, runs }))).toEqual({ runs, omittedRuns: 3 });
-    expect(subagentSnapshot(wire({ kind: "pi-subagents.async-status-snapshot", version: 2, runs }))).toBeUndefined();
-    expect(subagentSnapshot(wire({ kind: "pi-subagents.async-status-snapshot", version: 1, runs: [] }))).toBeUndefined();
-    expect(subagentSnapshot(["PI_SUBAGENT_ASYNC_JSON:{"])).toBeUndefined();
-    expect(subagentSnapshot(["plain line"])).toBeUndefined();
-  });
-
   it("lists runs as an indented tree with elapsed times and running progress", () => {
     expect(subagentRows(snapshot, 91_000)).toEqual([
       { depth: 0, state: "failed", label: "oracle", elapsedMs: 5_000 },
