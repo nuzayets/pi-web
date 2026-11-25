@@ -110,7 +110,8 @@ import { createAskUserToolDefinition } from "./askUserTool.js";
 import { createRequestHumanInterventionToolDefinition } from "./requestHumanInterventionTool.js";
 import { createArchiveSelfToolDefinition, type CheckSelfArchive } from "./archiveSelfTool.js";
 import { continuesConversation, requestsHumanIntervention, SESSION_INTERVENTION_CUSTOM_TYPE, sessionInterventionRequired } from "./sessionIntervention.js";
-import { goalWaitingFromEntry, sessionGoalWaiting } from "./sessionGoalWait.js";
+import { goalStateFromEntry, sessionGoalState, sessionGoalWaiting, type SessionGoalState } from "./sessionGoalWait.js";
+import { SUBAGENT_CHANGE_EVENTS, sessionLivenessActive, sessionLivenessRegistry } from "./sessionLivenessRegistry.js";
 import { createAskUserOutcome, openAskUserRequest, renderAskUserAnswersText, resolveAskUserRequest } from "./askUserDomain.js";
 import { PendingExtensionDialogStore, type ExtensionDialogCancelReason } from "./pendingExtensionDialogStore.js";
 import { ExtensionDialogWaiters, effectiveExtensionDialogTimeoutMs, extensionDialogCancelValue } from "./extensionDialogWaiters.js";
@@ -1285,7 +1286,9 @@ export class PiSessionService implements SessionRouteService {
   readonly mcpAuthFlows = new McpAuthFlowService();
   private readonly runtimeMessageCounts = new WeakMap<PiAgentSession, number>();
   private readonly interventionStates = new WeakMap<PiAgentSession, boolean>();
-  private readonly goalWaitingStates = new WeakMap<PiAgentSession, boolean>();
+  private readonly goalStates = new WeakMap<PiAgentSession, SessionGoalState>();
+  private readonly livenessRegistry = sessionLivenessRegistry();
+  private readonly publishedBackgroundWork = new WeakMap<PiAgentSession, boolean | undefined>();
   /** Fresh tool intent only: reopening a transcript never replays archival. */
   private readonly selfArchiveRequests = new WeakMap<PiAgentSession, { sessionId: string; toolCallId: string; persisted: boolean; settled: boolean }>();
   private readonly selfArchiveScheduled = new WeakSet<PiAgentSession>();
@@ -4570,7 +4573,7 @@ export class PiSessionService implements SessionRouteService {
     // Closing a runtime ends work and dialogs, not persisted execution state.
     // Successful archive/delete paths remove this cold-session record afterward.
     // Goal waiting stays cleared until shutdown has persisted the final Goal state.
-    this.goalWaitingStates.delete(session);
+    this.goalStates.delete(session);
     if (sessionFileExists(session.sessionFile) && this.interventionRequired(session)) {
       this.workspaceActivity?.applyPersistedSessionState(cwd, sessionId, { interventionRequired: true });
     }
@@ -5407,7 +5410,7 @@ export class PiSessionService implements SessionRouteService {
     this.restoreSubsessionReceipts(session);
     this.reconcileRuntimeMessageCount(session);
     this.interventionStates.set(session, sessionInterventionRequired(session.sessionManager.getEntries?.() ?? session.sessionManager.getBranch()));
-    this.goalWaitingStates.set(session, sessionGoalWaiting(session.sessionManager.getBranch()));
+    this.goalStates.set(session, sessionGoalState(session.sessionManager.getBranch()));
     this.publishedSessionNames.set(session, { sessionId: session.sessionId, name: session.sessionName });
     this.statistics.initialize(session);
     const unsubscribe = session.subscribe((event) => {
@@ -5434,8 +5437,8 @@ export class PiSessionService implements SessionRouteService {
         }
       }
       // pi-goal appends its whole state on every change; the status published below carries it.
-      const goalWaiting = eventType === "entry_appended" ? goalWaitingFromEntry(entry) : undefined;
-      if (goalWaiting !== undefined) this.goalWaitingStates.set(session, goalWaiting);
+      const goalState = eventType === "entry_appended" ? goalStateFromEntry(entry) : undefined;
+      if (goalState !== undefined) this.goalStates.set(session, goalState);
       if ((eventType === "message_end" && (role === "user" || role === "assistant" || role === "toolResult" || role === "system"))
         || (eventType === "entry_appended" && getString(entry, "type") === "message")) {
         this.runtimeMessageCounts.set(session, this.runtimeMessageCount(session) + 1);
@@ -5491,6 +5494,11 @@ export class PiSessionService implements SessionRouteService {
       }
       this.updateSubsessionTracking(session, eventType === "agent_start", eventType === "agent_settled");
     });
+    if (this.sessionEvents.hosts(session)) {
+      // Closed with the bus below, by sessionEvents.close().
+      const bus = this.sessionEvents.connect(session, new AbortController().signal);
+      for (const channel of SUBAGENT_CHANGE_EVENTS) bus.on(channel, () => { this.publishBackgroundWorkChange(session); });
+    }
     active.unsubscribe = () => {
       this.clearSubsessionDelivery(session);
       this.sessionEvents.close(session);
@@ -6029,7 +6037,22 @@ export class PiSessionService implements SessionRouteService {
 
   /** Every hosted session is bound before its status is read; anything else is not waiting. */
   private goalWaiting(session: PiAgentSession): boolean {
-    return this.goalWaitingStates.get(session) === true;
+    return this.goalStates.get(session) === "waiting";
+  }
+
+  /** An active Goal, waiting or not, or the session's reported liveness. */
+  private hasBackgroundWork(session: PiAgentSession): boolean | undefined {
+    const goal = this.goalStates.get(session);
+    if (goal === "active" || goal === "waiting") return true;
+    return sessionLivenessActive(this.livenessRegistry, session.sessionId);
+  }
+
+  /**
+   * pi-subagents reports job and result delivery changes only on the session's event bus.
+   * A result delivered without a new turn ends its liveness with no session event.
+   */
+  private publishBackgroundWorkChange(session: PiAgentSession): void {
+    if (this.hasBackgroundWork(session) !== this.publishedBackgroundWork.get(session)) this.publishStatus(session);
   }
 
   private statusInterventionRequired(session: PiAgentSession): boolean {
@@ -6053,6 +6076,7 @@ export class PiSessionService implements SessionRouteService {
   private publishStatus(session: PiAgentSession): void {
     void this.refreshActivityMarker(session);
     const status = this.statusFromSession(session);
+    this.publishedBackgroundWork.set(session, status.hasBackgroundWork);
     this.clearStaleActiveActivity(session);
     this.workspaceActivity?.applySessionStatus(session.sessionManager.getCwd(), status);
     this.events.publish(session.sessionId, { type: "status.update", status });
@@ -6102,12 +6126,14 @@ export class PiSessionService implements SessionRouteService {
     const queuedMessages = this.queuedMessages(session);
     const queueMessageActionsUnavailable = this.queueCompatibility.reason(session);
     const queuedAskIds = queuedAskIdsFromSession(session);
+    const hasBackgroundWork = this.hasBackgroundWork(session);
     return {
       sessionId: session.sessionId,
       persisted: sessionFileExists(session.sessionFile),
       recentlyActiveElsewhere: this.activityMarker.isActiveElsewhere(session.sessionFile),
       interventionRequired: this.interventionRequired(session) || pendingDialogs.length > 0,
       goalWaiting: this.goalWaiting(session),
+      ...(hasBackgroundWork === undefined ? {} : { hasBackgroundWork }),
       ...(model === undefined ? {} : { model }),
       thinkingLevel: session.thinkingLevel,
       isStreaming: session.isStreaming,

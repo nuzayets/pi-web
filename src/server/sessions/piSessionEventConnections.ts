@@ -15,6 +15,10 @@ export class PiSessionEventConnections {
     this.sessions.set(session, { bus, connections: new Set(), ...(detachBackend === undefined ? {} : { detachBackend }) });
   }
 
+  hosts(session: object): boolean {
+    return this.sessions.has(session);
+  }
+
   connect(session: object, lifetime: AbortSignal): PiWebHostPiSessionConnection {
     lifetime.throwIfAborted();
     const hosted = this.sessions.get(session);

@@ -1284,6 +1284,14 @@ export interface SessionStatus {
   interventionRequired?: boolean;
   /** Live pi-goal waiting state, including false; absent on older daemons. */
   goalWaiting?: boolean;
+  /**
+   * Work that outlasts the session's own run, read in the same frame as `isStreaming`: an
+   * active pi-goal Goal, waiting or not, or live work a session liveness provider reports,
+   * which for pi-subagents includes a finished run whose result has not yet started a parent
+   * turn. False requires a registered provider reporting idle; absent on older daemons
+   * and when child liveness is unknown (including before the provider registers).
+   */
+  hasBackgroundWork?: boolean;
   /** True when the server has verified a backing session file exists; false when known transient. */
   persisted?: boolean;
   /**

@@ -68,17 +68,24 @@ describe("Goal waiting projection", () => {
     // Tree navigation left that wait on another branch, so pi-goal does not restore it.
     manager.branch(root);
     const { service, workspaceActivity, appendGoalState, lastStatusUpdate } = await goalWaitService({ manager });
-    expect((await service.status(sessionRef(id))).goalWaiting).toBe(false);
+    const initial = await service.status(sessionRef(id));
+    expect(initial.goalWaiting).toBe(false);
+    expect(initial).not.toHaveProperty("hasBackgroundWork");
 
     appendGoalState(waitingGoal);
-    expect(lastStatusUpdate()).toMatchObject({ status: { sessionId: id, goalWaiting: true } });
+    expect(lastStatusUpdate()).toMatchObject({ status: { sessionId: id, goalWaiting: true, hasBackgroundWork: true } });
     expect(workspaceActivity.snapshot().goalWaitingSessions).toEqual(waitingSessions);
     expect((await service.list("/workspace"))[0]?.goalWaiting).toBe(true);
 
+    // An active Goal continues on its own even when it is not waiting.
     appendGoalState(activeGoal);
-    expect(lastStatusUpdate()).toMatchObject({ status: { sessionId: id, goalWaiting: false } });
+    expect(lastStatusUpdate()).toMatchObject({ status: { sessionId: id, goalWaiting: false, hasBackgroundWork: true } });
     expect(workspaceActivity.snapshot().goalWaitingSessions).toEqual([]);
     expect((await service.list("/workspace"))[0]?.goalWaiting).toBe(false);
+
+    appendGoalState(pausedGoal);
+    expect(lastStatusUpdate()).toMatchObject({ status: { sessionId: id, goalWaiting: false } });
+    expect(lastStatusUpdate()).not.toHaveProperty("status.hasBackgroundWork");
   });
 
   it("keeps a stopped session waiting only when shutdown persisted a wait, and clears it meanwhile", async () => {
