@@ -14,14 +14,14 @@ describe("session liveness registry", () => {
     onTestFinished(() => releaseIdle?.());
 
     expect(sessionLivenessActive(registry, "s1")).toBe(true);
-    expect(sessionLivenessActive(registry, "s2")).toBeUndefined();
+    expect(sessionLivenessActive(registry, "s2")).toBeNull();
     live = false;
     expect(sessionLivenessActive(registry, "s1")).toBe(false);
     live = true;
     release?.();
     expect(sessionLivenessActive(registry, "s1")).toBe(false);
     releaseIdle?.();
-    expect(sessionLivenessActive(registry, "s1")).toBeUndefined();
+    expect(sessionLivenessActive(registry, "s1")).toBeNull();
     expect(() => registry?.register({ name: "broken", sessionId: "s1" })).toThrow();
   });
 
@@ -29,8 +29,8 @@ describe("session liveness registry", () => {
     const registry = sessionLivenessRegistry();
     const release = registry?.register({ name: "failing", sessionId: "s3", isActive: () => { throw new Error("stale context"); } });
     onTestFinished(() => release?.());
-    expect(sessionLivenessActive(registry, "s3")).toBeUndefined();
-    expect(sessionLivenessActive(undefined, "s3")).toBeUndefined();
+    expect(sessionLivenessActive(registry, "s3")).toBeNull();
+    expect(sessionLivenessActive(undefined, "s3")).toBeNull();
 
     const ours: unknown = Reflect.get(globalThis, KEY);
     const foreign = { version: 1, register: () => () => undefined };

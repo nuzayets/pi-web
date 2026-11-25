@@ -101,14 +101,14 @@ describe("background work beside isStreaming across a real Pi runtime", () => {
     await modelRuntime.setRuntimeApiKey("anthropic", "isolated-test-key");
 
     // Global frames as one browser's socket receives them.
-    const statuses: { isStreaming: boolean; hasBackgroundWork: boolean | undefined }[] = [];
+    const statuses: { isStreaming: boolean; hasBackgroundWork: boolean | null | undefined }[] = [];
     const hub = new SessionEventHub();
     hub.addGlobal({ OPEN: 1, readyState: 1, terminate: () => undefined, on: () => undefined, send: (payload: string) => {
       const frame: unknown = JSON.parse(payload);
       const status = isRecord(frame) && frame["type"] === "status.update" ? frame["status"] : undefined;
       if (isRecord(status) && status["sessionId"] === ref.id) {
         const hasBackgroundWork = status["hasBackgroundWork"];
-        statuses.push({ isStreaming: status["isStreaming"] === true, hasBackgroundWork: typeof hasBackgroundWork === "boolean" ? hasBackgroundWork : undefined });
+        statuses.push({ isStreaming: status["isStreaming"] === true, hasBackgroundWork: typeof hasBackgroundWork === "boolean" || hasBackgroundWork === null ? hasBackgroundWork : undefined });
       }
     } });
     const subagents = new SubagentsFixture();
@@ -184,7 +184,9 @@ describe("background work beside isStreaming across a real Pi runtime", () => {
     subagents.set("restored", "running");
     let mark = statuses.length;
     await service.reload(ref);
+    // The restored job's pre-registration report is explicit unknown, never idle.
     expect(statuses.slice(mark).some((status) => status.hasBackgroundWork === false)).toBe(false);
+    expect(statuses.slice(mark).some((status) => status.hasBackgroundWork === null)).toBe(true);
     expect(statuses.at(-1)).toEqual({ isStreaming: false, hasBackgroundWork: true });
     expect(await service.status(ref)).toMatchObject({ isStreaming: false, hasBackgroundWork: true });
     subagents.set("restored", "stopped");

@@ -1288,10 +1288,11 @@ export interface SessionStatus {
    * Work that outlasts the session's own run, read in the same frame as `isStreaming`: an
    * active pi-goal Goal, waiting or not, or live work a session liveness provider reports,
    * which for pi-subagents includes a finished run whose result has not yet started a parent
-   * turn. False requires a registered provider reporting idle; absent on older daemons
-   * and when child liveness is unknown (including before the provider registers).
+   * turn. False requires a registered provider reporting idle. Null means this server cannot
+   * confirm child liveness (including before the provider registers); absent only on older
+   * daemons, which never publish it.
    */
-  hasBackgroundWork?: boolean;
+  hasBackgroundWork?: boolean | null;
   /** True when the server has verified a backing session file exists; false when known transient. */
   persisted?: boolean;
   /**

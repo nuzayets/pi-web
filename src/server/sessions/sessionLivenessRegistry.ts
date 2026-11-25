@@ -57,17 +57,17 @@ export function sessionLivenessRegistry(): HostRegistry | undefined {
   return registry;
 }
 
-/** An empty lookup cannot distinguish startup or an unsupported extension from idle. */
-export function sessionLivenessActive(registry: HostRegistry | undefined, sessionId: string): boolean | undefined {
-  if (registry === undefined) return undefined;
+/** Null when liveness cannot be confirmed: an empty lookup is startup or an unsupported extension, not idle. */
+export function sessionLivenessActive(registry: HostRegistry | undefined, sessionId: string): boolean | null {
+  if (registry === undefined) return null;
   let active: boolean | undefined;
   for (const provider of registry.providers) {
     if (provider.sessionId !== sessionId) continue;
     try {
       active = provider.isActive() === true || active === true;
     } catch {
-      return undefined;
+      return null;
     }
   }
-  return active;
+  return active ?? null;
 }

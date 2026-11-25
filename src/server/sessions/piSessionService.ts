@@ -1288,7 +1288,7 @@ export class PiSessionService implements SessionRouteService {
   private readonly interventionStates = new WeakMap<PiAgentSession, boolean>();
   private readonly goalStates = new WeakMap<PiAgentSession, SessionGoalState>();
   private readonly livenessRegistry = sessionLivenessRegistry();
-  private readonly publishedBackgroundWork = new WeakMap<PiAgentSession, boolean | undefined>();
+  private readonly publishedBackgroundWork = new WeakMap<PiAgentSession, boolean | null>();
   /** Fresh tool intent only: reopening a transcript never replays archival. */
   private readonly selfArchiveRequests = new WeakMap<PiAgentSession, { sessionId: string; toolCallId: string; persisted: boolean; settled: boolean }>();
   private readonly selfArchiveScheduled = new WeakSet<PiAgentSession>();
@@ -6041,7 +6041,7 @@ export class PiSessionService implements SessionRouteService {
   }
 
   /** An active Goal, waiting or not, or the session's reported liveness. */
-  private hasBackgroundWork(session: PiAgentSession): boolean | undefined {
+  private hasBackgroundWork(session: PiAgentSession): boolean | null {
     const goal = this.goalStates.get(session);
     if (goal === "active" || goal === "waiting") return true;
     return sessionLivenessActive(this.livenessRegistry, session.sessionId);
@@ -6076,7 +6076,7 @@ export class PiSessionService implements SessionRouteService {
   private publishStatus(session: PiAgentSession): void {
     void this.refreshActivityMarker(session);
     const status = this.statusFromSession(session);
-    this.publishedBackgroundWork.set(session, status.hasBackgroundWork);
+    this.publishedBackgroundWork.set(session, status.hasBackgroundWork ?? null);
     this.clearStaleActiveActivity(session);
     this.workspaceActivity?.applySessionStatus(session.sessionManager.getCwd(), status);
     this.events.publish(session.sessionId, { type: "status.update", status });
@@ -6133,7 +6133,7 @@ export class PiSessionService implements SessionRouteService {
       recentlyActiveElsewhere: this.activityMarker.isActiveElsewhere(session.sessionFile),
       interventionRequired: this.interventionRequired(session) || pendingDialogs.length > 0,
       goalWaiting: this.goalWaiting(session),
-      ...(hasBackgroundWork === undefined ? {} : { hasBackgroundWork }),
+      hasBackgroundWork,
       ...(model === undefined ? {} : { model }),
       thinkingLevel: session.thinkingLevel,
       isStreaming: session.isStreaming,

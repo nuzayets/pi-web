@@ -70,7 +70,7 @@ describe("Goal waiting projection", () => {
     const { service, workspaceActivity, appendGoalState, lastStatusUpdate } = await goalWaitService({ manager });
     const initial = await service.status(sessionRef(id));
     expect(initial.goalWaiting).toBe(false);
-    expect(initial).not.toHaveProperty("hasBackgroundWork");
+    expect(initial.hasBackgroundWork).toBeNull();
 
     appendGoalState(waitingGoal);
     expect(lastStatusUpdate()).toMatchObject({ status: { sessionId: id, goalWaiting: true, hasBackgroundWork: true } });
@@ -85,7 +85,7 @@ describe("Goal waiting projection", () => {
 
     appendGoalState(pausedGoal);
     expect(lastStatusUpdate()).toMatchObject({ status: { sessionId: id, goalWaiting: false } });
-    expect(lastStatusUpdate()).not.toHaveProperty("status.hasBackgroundWork");
+    expect(lastStatusUpdate()).toMatchObject({ status: { hasBackgroundWork: null } });
   });
 
   it("keeps a stopped session waiting only when shutdown persisted a wait, and clears it meanwhile", async () => {
