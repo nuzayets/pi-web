@@ -16,10 +16,21 @@ import { CapturingSessionEventHub, createTestModelRuntime, emptyArchiveStore, te
 // Real SDK dispatch, persistence and run ordering; only runtime construction,
 // model transport and one extension are substituted. The link needs an SDK
 // whose preflightResult passes the dispatched user message (the p5yr hook);
-// with any other SDK the same submissions must stay silent.
+// with any other SDK the same submissions must stay silent. A busy prompt's
+// link also needs the queued message, which an SDK may report or not.
 const sdkReportsPromptMessages = await withHostedSession([reply([{ type: "text", text: "Probe" }])], [], async ({ session }) => {
   let reported: unknown;
   await session.prompt("Probe", { preflightResult: (_disposition, message?: unknown) => { reported = message; } });
+  return typeof reported === "object" && reported !== null;
+});
+const probeRun = heldReply([{ type: "text", text: "Probe" }]);
+const sdkReportsQueuedMessages = sdkReportsPromptMessages && await withHostedSession([probeRun.reply, reply([{ type: "text", text: "Queued" }])], [], async ({ session }) => {
+  let reported: unknown;
+  const run = session.prompt("Probe");
+  await probeRun.requested;
+  await session.prompt("Queued", { streamingBehavior: "followUp", preflightResult: (_disposition, message?: unknown) => { reported = message; } });
+  probeRun.release();
+  await run;
   return typeof reported === "object" && reported !== null;
 });
 
@@ -83,24 +94,17 @@ describe.runIf(sdkReportsPromptMessages)("prompt reply link with an SDK that rep
     });
   });
 
-  it("stays silent for both requests when a queued prompt joins the run", async () => {
-    const firstRequest = latch();
-    const firstAnswer = latch();
-    await withHostedSession([
-      (abort) => {
-        firstRequest.resolve();
-        return reply([{ type: "text", text: "Answer to first" }], firstAnswer.promise)(abort);
-      },
-      reply([{ type: "text", text: "Answer to both" }]),
-    ], [], async ({ service, ref, session, hub }) => {
+  it.runIf(!sdkReportsQueuedMessages)("stays silent for both requests when the SDK does not report a queued prompt's message", async () => {
+    const first = heldReply([{ type: "text", text: "Answer to first" }]);
+    await withHostedSession([first.reply, reply([{ type: "text", text: "Answer to second" }])], [], async ({ service, ref, session, hub }) => {
       await service.prompt(ref, "First", undefined, undefined, { requestId: "voice-1" });
-      await firstRequest.promise;
+      await first.requested;
       await service.prompt(ref, "Second", undefined, undefined, { requestId: "voice-2" });
       await vi.waitFor(() => { expect(session.getFollowUpMessages()).toEqual(["Second"]); });
-      firstAnswer.resolve();
+      first.release();
       await vi.waitFor(() => { expect(settledCount(hub)).toBe(1); });
 
-      expect(session.sessionManager.getBranch().filter((entry) => entry.type === "message" && entry.message.role === "user")).toHaveLength(2);
+      expect(modelInputKinds(session)).toEqual(["user", "assistant", "user", "assistant"]);
       expect(promptReplies(hub)).toEqual([]);
     });
   });
@@ -162,6 +166,294 @@ describe.runIf(sdkReportsPromptMessages)("prompt reply link with an SDK that rep
       expect(final?.type === "message" && final.message.role === "assistant" && final.message.stopReason).toBe("error");
       expect(promptReplies(hub)).toEqual([]);
     });
+  });
+});
+
+describe.runIf(sdkReportsQueuedMessages)("busy prompt reply link with an SDK that also reports queued messages", () => {
+  it("links a spoken follow-up queued behind a typed prompt to the run's final, live only", async () => {
+    const typed = heldReply([{ type: "text", text: "Answer to typed" }]);
+    await withHostedSession([typed.reply, reply([{ type: "text", text: "Answer to spoken" }]), reply([{ type: "text", text: "Later" }])], [], async ({ service, ref, session, hub }) => {
+      await service.prompt(ref, "Typed");
+      await typed.requested;
+      await service.prompt(ref, "Spoken", "followUp", undefined, { requestId: "voice-1" });
+      await vi.waitFor(() => { expect(session.getFollowUpMessages()).toEqual(["Spoken"]); });
+      typed.release();
+      await vi.waitFor(() => { expect(settledCount(hub)).toBe(1); });
+
+      expect(modelInputKinds(session)).toEqual(["user", "assistant", "user", "assistant"]);
+      const final = session.sessionManager.getBranch().at(-1);
+      expect(promptReplies(hub)).toEqual([{ requestId: "voice-1", entryId: final?.id }]);
+      // Only the live agent_settled frame carries it: what a reconnecting client reads does not.
+      expect(hub.sessionEvents.filter(({ event }) => JSON.stringify(event).includes("voice-1"))).toHaveLength(1);
+      for (const snapshot of [await service.transcriptSnapshot(ref), await service.streamSnapshot(ref), await service.status(ref)]) {
+        expect(JSON.stringify(snapshot)).not.toContain("voice-1");
+      }
+
+      await service.prompt(ref, "Again");
+      await vi.waitFor(() => { expect(settledCount(hub)).toBe(2); });
+      expect(promptReplies(hub)).toHaveLength(1);
+    });
+  });
+
+  it("links a spoken steer that the run consumes after a tool round", async () => {
+    const tool = heldReply([{ type: "toolCall", id: "lookup-call", name: "lookup", arguments: {} }]);
+    await withHostedSession([tool.reply, reply([{ type: "text", text: "Answer to steer" }])], [], async ({ service, ref, session, hub }) => {
+      await service.prompt(ref, "Look it up");
+      await tool.requested;
+      await service.prompt(ref, "Steered", "steer", undefined, { requestId: "voice-1" });
+      await vi.waitFor(() => { expect(session.getSteeringMessages()).toEqual(["Steered"]); });
+      tool.release();
+      await vi.waitFor(() => { expect(settledCount(hub)).toBe(1); });
+
+      expect(modelInputKinds(session)).toEqual(["user", "assistant", "toolResult", "user", "assistant"]);
+      expect(promptReplies(hub)).toEqual([{ requestId: "voice-1", entryId: session.sessionManager.getBranch().at(-1)?.id }]);
+    });
+  });
+
+  it("links only the run's last input, not an earlier one that had its own reply", async () => {
+    const first = heldReply([{ type: "text", text: "Answer to first" }]);
+    await withHostedSession([
+      first.reply, reply([{ type: "text", text: "Answer to second" }]), reply([{ type: "text", text: "Answer to third" }]),
+    ], [], async ({ service, ref, session, hub }) => {
+      await service.prompt(ref, "First", undefined, undefined, { requestId: "voice-1" });
+      await first.requested;
+      await service.prompt(ref, "Second", "followUp", undefined, { requestId: "voice-2" });
+      await service.prompt(ref, "Third", "followUp", undefined, { requestId: "voice-3" });
+      await vi.waitFor(() => { expect(session.getFollowUpMessages()).toEqual(["Second", "Third"]); });
+      first.release();
+      await vi.waitFor(() => { expect(settledCount(hub)).toBe(1); });
+
+      expect(modelInputKinds(session)).toEqual(["user", "assistant", "user", "assistant", "user", "assistant"]);
+      expect(promptReplies(hub)).toEqual([{ requestId: "voice-3", entryId: session.sessionManager.getBranch().at(-1)?.id }]);
+    });
+  });
+
+  it.each([
+    { batch: "two devices", requests: ["device-a-1", "device-b-1"] },
+    { batch: "one device", requests: ["device-a-1", "device-a-2"] },
+    { batch: "a spoken and a typed steer", requests: ["device-a-1", undefined] },
+  ])("stays silent for steers delivered together from $batch", async ({ requests }) => {
+    const typed = heldReply([{ type: "text", text: "Answer to typed" }]);
+    await withHostedSession([typed.reply, reply([{ type: "text", text: "One answer to both" }])], [], async ({ service, ref, session, hub }) => {
+      await service.prompt(ref, "Typed");
+      await typed.requested;
+      for (const [index, requestId] of requests.entries()) {
+        await service.prompt(ref, `Steer ${String(index)}`, "steer", undefined, requestId === undefined ? undefined : { requestId });
+      }
+      await vi.waitFor(() => { expect(session.getSteeringMessages()).toEqual(["Steer 0", "Steer 1"]); });
+      typed.release();
+      await vi.waitFor(() => { expect(settledCount(hub)).toBe(1); });
+
+      expect(modelInputKinds(session)).toEqual(["user", "assistant", "user", "user", "assistant"]);
+      expect(promptReplies(hub)).toEqual([]);
+    }, { steeringMode: "all" });
+  });
+
+  it("links the queued request, not the same text a second device sent while it waited", async () => {
+    const typed = heldReply([{ type: "text", text: "Answer to typed" }]);
+    await withHostedSession([typed.reply, reply([{ type: "text", text: "Answer to same" }])], [], async ({ service, ref, session, hub }) => {
+      await service.prompt(ref, "Typed");
+      await typed.requested;
+      await service.prompt(ref, "Same", "followUp", undefined, { requestId: "device-a-1" });
+      await vi.waitFor(() => { expect(session.getFollowUpMessages()).toEqual(["Same"]); });
+      // A duplicate of queued text is dropped before the SDK.
+      await service.prompt(ref, "Same", "followUp", undefined, { requestId: "device-b-1" });
+      typed.release();
+      await vi.waitFor(() => { expect(settledCount(hub)).toBe(1); });
+
+      expect(modelInputKinds(session)).toEqual(["user", "assistant", "user", "assistant"]);
+      expect(promptReplies(hub)).toEqual([{ requestId: "device-a-1", entryId: session.sessionManager.getBranch().at(-1)?.id }]);
+    });
+  });
+
+  it("stays silent when the same text, typed, is the run's last input", async () => {
+    const typed = heldReply([{ type: "text", text: "Answer to typed" }]);
+    const spoken = heldReply([{ type: "text", text: "Answer to spoken" }]);
+    await withHostedSession([typed.reply, spoken.reply, reply([{ type: "text", text: "Answer to same, typed" }])], [], async ({ service, ref, session, hub }) => {
+      await service.prompt(ref, "Typed");
+      await typed.requested;
+      await service.prompt(ref, "Same", "followUp", undefined, { requestId: "device-a-1" });
+      await vi.waitFor(() => { expect(session.getFollowUpMessages()).toEqual(["Same"]); });
+      typed.release();
+      await spoken.requested;
+      await service.prompt(ref, "Same", "followUp");
+      await vi.waitFor(() => { expect(session.getFollowUpMessages()).toEqual(["Same"]); });
+      spoken.release();
+      await vi.waitFor(() => { expect(settledCount(hub)).toBe(1); });
+
+      expect(modelInputKinds(session)).toEqual(["user", "assistant", "user", "assistant", "user", "assistant"]);
+      expect(promptReplies(hub)).toEqual([]);
+    });
+  });
+
+  const retractions: { retraction: string; retract: (service: PiSessionService, ref: { id: string; cwd: string }) => Promise<unknown> }[] = [
+    { retraction: "removed", retract: (service, ref) => service.mutateQueueMessage(ref, { action: "remove", index: 0, expectedQueue: [{ kind: "followUp", text: "Spoken" }] }) },
+    {
+      retraction: "edited and sent again",
+      retract: async (service, ref) => {
+        await service.mutateQueueMessage(ref, { action: "edit", index: 0, expectedQueue: [{ kind: "followUp", text: "Spoken" }] });
+        await service.prompt(ref, "Spoken, edited", "followUp");
+      },
+    },
+    { retraction: "cleared", retract: (service, ref) => service.clearQueue(ref) },
+  ];
+
+  it.each(retractions)("stays silent for a queued request that is $retraction", async ({ retract }) => {
+    const typed = heldReply([{ type: "text", text: "Answer to typed" }]);
+    await withHostedSession([typed.reply, reply([{ type: "text", text: "Answer to edit" }])], [], async ({ service, ref, session, hub }) => {
+      await service.prompt(ref, "Typed");
+      await typed.requested;
+      await service.prompt(ref, "Spoken", "followUp", undefined, { requestId: "voice-1" });
+      await vi.waitFor(() => { expect(session.getFollowUpMessages()).toEqual(["Spoken"]); });
+      await retract(service, ref);
+      typed.release();
+      await vi.waitFor(() => { expect(settledCount(hub)).toBe(1); });
+
+      expect(JSON.stringify(session.sessionManager.getBranch())).not.toContain("\"Spoken\"");
+      expect(promptReplies(hub)).toEqual([]);
+    });
+  });
+
+  it.each([false, true])("clearing a selected follow-up before delivery retires only old requests (new follow-up: %s)", async (sendAfterClear) => {
+    const typed = heldReply([{ type: "text", text: "Answer to typed" }]);
+    const turnStarted = latch();
+    const deliver = latch();
+    const holdDelivery: InlineExtension = (pi) => {
+      pi.on("turn_start", async ({ turnIndex }) => {
+        if (turnIndex !== 1) return;
+        turnStarted.resolve();
+        await deliver.promise;
+      });
+    };
+    await withHostedSession([typed.reply, reply([{ type: "text", text: "Answer to cleared" }]), reply([{ type: "text", text: "Answer to new" }])], [holdDelivery], async ({ service, ref, session, hub, modelRequests }) => {
+      try {
+        await service.prompt(ref, "Typed");
+        await typed.requested;
+        await service.prompt(ref, "Cleared", "followUp", undefined, { requestId: "voice-old" });
+        await vi.waitFor(() => { expect(session.getFollowUpMessages()).toEqual(["Cleared"]); });
+        typed.release();
+        await turnStarted.promise;
+        expect(session.agent.hasQueuedMessages()).toBe(false);
+        expect(session.getFollowUpMessages()).toEqual(["Cleared"]);
+        await service.clearQueue(ref);
+        expect(session.getFollowUpMessages()).toEqual([]);
+        if (sendAfterClear) {
+          await service.prompt(ref, "New", "followUp", undefined, { requestId: "voice-new" });
+          await vi.waitFor(() => { expect(session.getFollowUpMessages()).toEqual(["New"]); });
+        }
+      } finally {
+        typed.release();
+        deliver.resolve();
+      }
+      await vi.waitFor(() => { expect(settledCount(hub)).toBe(1); });
+
+      // Clear did not remove the input Pi had already selected; it revoked only its spoken link.
+      expect(modelRequests[1]).toContain("Cleared");
+      expect(promptReplies(hub)).toEqual(sendAfterClear
+        ? [{ requestId: "voice-new", entryId: session.sessionManager.getBranch().at(-1)?.id }] : []);
+    });
+  });
+
+  it("keeps the link when another prompt is cleared after the dictated input was delivered", async () => {
+    const typed = heldReply([{ type: "text", text: "Answer to typed" }]);
+    const spoken = heldReply([{ type: "text", text: "Answer to spoken" }]);
+    await withHostedSession([typed.reply, spoken.reply], [], async ({ service, ref, session, hub }) => {
+      try {
+        await service.prompt(ref, "Typed");
+        await typed.requested;
+        await service.prompt(ref, "Spoken", "followUp", undefined, { requestId: "voice-1" });
+        await vi.waitFor(() => { expect(session.getFollowUpMessages()).toEqual(["Spoken"]); });
+        typed.release();
+        await spoken.requested;
+        await service.prompt(ref, "Clear this", "followUp");
+        await vi.waitFor(() => { expect(session.getFollowUpMessages()).toEqual(["Clear this"]); });
+        await service.clearQueue(ref);
+      } finally {
+        typed.release();
+        spoken.release();
+      }
+      await vi.waitFor(() => { expect(settledCount(hub)).toBe(1); });
+
+      expect(modelInputKinds(session)).toEqual(["user", "assistant", "user", "assistant"]);
+      expect(promptReplies(hub)).toEqual([{ requestId: "voice-1", entryId: session.sessionManager.getBranch().at(-1)?.id }]);
+    });
+  });
+
+  it("stays silent for a queued request when the run is stopped", async () => {
+    const pending = latch();
+    await withHostedSession([replyUntilAborted(pending.resolve)], [], async ({ service, ref, session, hub }) => {
+      await service.prompt(ref, "Typed");
+      await pending.promise;
+      await service.prompt(ref, "Spoken", "followUp", undefined, { requestId: "voice-1" });
+      await vi.waitFor(() => { expect(session.getFollowUpMessages()).toEqual(["Spoken"]); });
+      await service.abort(ref);
+      await vi.waitFor(() => { expect(settledCount(hub)).toBe(1); });
+
+      expect(modelInputKinds(session)).toEqual(["user", "assistant"]);
+      expect(promptReplies(hub)).toEqual([]);
+    });
+  });
+
+  it("stays silent when the queued request's reply is a provider error", async () => {
+    const typed = heldReply([{ type: "text", text: "Answer to typed" }]);
+    await withHostedSession([typed.reply, failedReply("Provider unavailable")], [], async ({ service, ref, session, hub }) => {
+      await service.prompt(ref, "Typed");
+      await typed.requested;
+      await service.prompt(ref, "Spoken", "followUp", undefined, { requestId: "voice-1" });
+      await vi.waitFor(() => { expect(session.getFollowUpMessages()).toEqual(["Spoken"]); });
+      typed.release();
+      await vi.waitFor(() => { expect(settledCount(hub)).toBe(1); });
+
+      expect(modelInputKinds(session)).toEqual(["user", "assistant", "user", "assistant"]);
+      expect(promptReplies(hub)).toEqual([]);
+    });
+  });
+
+  it("stays silent when an unrecovered provider error precedes a successful queued input", async () => {
+    const failed = latch();
+    const release = latch();
+    const initial: ModelReply = (signal) => {
+      failed.resolve();
+      return failedReply("Provider unavailable", release.promise)(signal);
+    };
+    await withHostedSession([initial, reply([{ type: "text", text: "Answer to spoken" }])], [], async ({ service, ref, session, hub, modelRequests }) => {
+      try {
+        await service.prompt(ref, "Typed");
+        await failed.promise;
+        await service.prompt(ref, "Spoken", "followUp", undefined, { requestId: "voice-1" });
+        await vi.waitFor(() => { expect(session.getFollowUpMessages()).toEqual(["Spoken"]); });
+      } finally {
+        release.resolve();
+      }
+      await vi.waitFor(() => { expect(settledCount(hub)).toBe(1); });
+
+      expect(modelRequests[1]).toContain("Spoken");
+      expect(session.sessionManager.getBranch().flatMap((entry) => entry.type === "message" && entry.message.role === "assistant" ? [entry.message.stopReason] : []))
+        .toEqual(["error", "stop"]);
+      expect(promptReplies(hub)).toEqual([]);
+    });
+  });
+
+  it("links a queued input after a successful retry of that same input", async () => {
+    const typed = heldReply([{ type: "text", text: "Answer to typed" }]);
+    await withHostedSession([
+      typed.reply, failedReply("Overloaded"), reply([{ type: "text", text: "Answer after retry" }]),
+    ], [], async ({ service, ref, session, hub, modelRequests }) => {
+      try {
+        await service.prompt(ref, "Typed");
+        await typed.requested;
+        await service.prompt(ref, "Spoken", "followUp", undefined, { requestId: "voice-1" });
+        await vi.waitFor(() => { expect(session.getFollowUpMessages()).toEqual(["Spoken"]); });
+      } finally {
+        typed.release();
+      }
+      await vi.waitFor(() => { expect(settledCount(hub)).toBe(1); });
+
+      expect(modelRequests).toHaveLength(3);
+      expect(modelRequests[1]).toContain("Spoken");
+      expect(modelRequests[2]).toEqual(modelRequests[1]);
+      expect(promptReplies(hub)).toEqual([{ requestId: "voice-1", entryId: session.sessionManager.getBranch().at(-1)?.id }]);
+    }, { retry: { enabled: true, maxRetries: 1, baseDelayMs: 0 } });
   });
 });
 
@@ -375,7 +667,10 @@ function lastMessageEntryId(ctx: ExtensionContext, role: "user" | "assistant"): 
   return entry.id;
 }
 
-async function withHostedSession<T>(replies: ModelReply[], extensionFactories: InlineExtension[], scenario: (hosted: HostedSession) => Promise<T>): Promise<T> {
+async function withHostedSession<T>(
+  replies: ModelReply[], extensionFactories: InlineExtension[], scenario: (hosted: HostedSession) => Promise<T>,
+  settings: Pick<NonNullable<Parameters<typeof SettingsManager.inMemory>[0]>, "steeringMode" | "retry"> = {},
+): Promise<T> {
   const directory = await mkdtemp(join(tmpdir(), "pi-web-prompt-reply-"));
   const agentDir = join(directory, "agent");
   let service: PiSessionService | undefined;
@@ -390,7 +685,7 @@ async function withHostedSession<T>(replies: ModelReply[], extensionFactories: I
     });
     const createAgentRuntime: NonNullable<PiSessionServiceDependencies["createAgentRuntime"]> = async (_factory, options) => {
       if (!(options.sessionManager instanceof SessionManager)) throw new Error("Expected a file-backed SessionManager");
-      const settingsManager = SettingsManager.inMemory({ retry: { enabled: false }, compaction: { enabled: false } });
+      const settingsManager = SettingsManager.inMemory({ retry: { enabled: false }, compaction: { enabled: false }, ...settings });
       const resourceLoader = new DefaultResourceLoader({
         cwd: directory, agentDir, settingsManager, extensionFactories,
         noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true,
@@ -452,11 +747,11 @@ function reply(content: AssistantMessage["content"], release: Promise<void> = Pr
   };
 }
 
-function failedReply(errorMessage: string): ModelReply {
+function failedReply(errorMessage: string, release: Promise<void> = Promise.resolve()): ModelReply {
   return () => {
     const message = { ...assistantMessage([], "error"), errorMessage };
     const stream = createAssistantMessageEventStream();
-    queueMicrotask(() => {
+    void release.then(() => {
       stream.push({ type: "error", reason: "error", error: message });
       stream.end(message);
     });
@@ -475,6 +770,20 @@ function replyUntilAborted(onRequest: () => void): ModelReply {
     }, { once: true });
     onRequest();
     return stream;
+  };
+}
+
+/** Completes with `content` once released, reporting when the model was asked. */
+function heldReply(content: AssistantMessage["content"]): { reply: ModelReply; requested: Promise<void>; release: () => void } {
+  const requested = latch();
+  const released = latch();
+  return {
+    requested: requested.promise,
+    release: released.resolve,
+    reply: (abort) => {
+      requested.resolve();
+      return reply(content, released.promise)(abort);
+    },
   };
 }
 
